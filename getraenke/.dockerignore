@@ -1,0 +1,8 @@
+# Lokale Build-Artefakte dürfen NICHT ins Image kopiert werden – sonst
+# überschreiben sie die im Container installierten Abhängigkeiten.
+**/node_modules
+**/dist
+**/.tmp
+**/*.tsbuildinfo
+**/data
+*.log

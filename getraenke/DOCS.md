@@ -1,0 +1,254 @@
+# Getränkeverwaltung
+
+Getränkebestand, Einkauf, Events und Kassenbericht – ausgelagert aus
+der Feuerwehr-Einsatzstatistik in ein eigenständiges Home-Assistant-Add-on.
+
+## Was das Add-on kann
+
+| Tab | Inhalt |
+| --- | --- |
+| **Bestand** | Kästen pro Sorte im Lager, Schnellbuchung ±1 Kasten, Einkaufsliste mit Bestellempfehlung |
+| **Einkauf** | Kompletten Einkauf mit Menge und Preis je Kasten auf einmal ins Lager buchen |
+| **Scannen** | Flaschen-Barcode scannen → 1 Kasten dieser Sorte ins Lager; wahlweise mit einem Handy als gekoppeltem Scanner; unbekannte Codes werden in einer offenen Produktdatenbank nachgeschlagen und lassen sich einer Sorte zuordnen |
+| **Events** | Sommerfest & Co. mit eigener Einkaufsliste (Getränkesorten + freie Artikel), druckbar |
+| **Auswertung** | Letzte Buchungen, Verbrauch pro Monat, Kassenbericht (Einnahmen/Ausgaben/Gewinn) |
+
+## Installation
+
+1. In Home Assistant: **Einstellungen → Add-ons → Add-on-Store**
+2. Oben rechts **⋮ → Repositories** und die URL dieses Repositories eintragen
+3. Add-on **Getränkeverwaltung** auswählen und **Installieren**
+4. **Starten** – danach erscheint „Getränke" in der Seitenleiste
+
+## Konfiguration
+
+Alles wird im Add-on-Store unter **Konfiguration** eingestellt – es gibt keine
+Einstellung, für die man in Dateien müsste.
+
+```yaml
+titel: FF Musterdorf – Getränke
+untertitel: Lagerbestand, Einkauf & Kassenbericht
+anmeldung: immer
+sitzungsdauer_tage: 30
+benutzer:
+  - name: cedric
+    passwort: EinLangesPasswort
+  - name: kasse
+    passwort: NochEinsAnderes
+produkt_lookup: true
+log_level: info
+```
+
+| Option | Bedeutung |
+| --- | --- |
+| `titel` | Überschrift in der Kopfleiste und im Browser-Tab |
+| `untertitel` | Kleine Zeile darunter, darf leer bleiben |
+| `anmeldung` | Wann die Anmeldemaske kommt – siehe unten |
+| `sitzungsdauer_tage` | Wie lange man angemeldet bleibt (1–365, Standard 30) |
+| `benutzer` | Liste aus Name + Passwort; über **+** kommen weitere dazu |
+| `produkt_lookup` | Unbekannte Barcodes bei Open Food Facts nachschlagen (Standard `true`) |
+| `log_level` | Ab `warning` werden keine Request-Logs mehr geschrieben |
+
+## Anmeldung
+
+Das Add-on bringt eine eigene Benutzeranmeldung mit. Die Konten stehen in den
+Add-on-Optionen – ein Eintrag pro Person, angelegt über das **+** in der
+Benutzerliste. Passwörter werden im Konfigurationsdialog verdeckt eingegeben.
+
+| `anmeldung` | Verhalten |
+| --- | --- |
+| `immer` (Standard) | Anmeldemaske überall, auch im Ingress-Panel |
+| `nur_direktzugriff` | Im Ingress-Panel reicht der Home-Assistant-Login; über Port 8099 bzw. eine eigene Subdomain wird angemeldet |
+| `aus` | Keine Anmeldung – nur sinnvoll, wenn ausschliesslich der Ingress genutzt wird |
+
+Nach dem ersten Start gilt `admin` / `bitte-aendern`. **Sofort ändern** – solange
+das Standardpasswort gesetzt ist, steht ein oranger Warnbalken über der App und
+eine Warnung im Add-on-Log.
+
+Weitere Details:
+
+- Die Anmeldung bleibt `sitzungsdauer_tage` lang bestehen, auch über Neustarts
+  und Add-on-Updates hinweg. Der dafür nötige Schlüssel liegt in
+  `/data/.session-secret`.
+- Wird ein Benutzer aus den Optionen entfernt, ist dessen Sitzung sofort
+  ungültig. Ein Passwortwechsel beendet laufende Sitzungen dagegen **nicht** –
+  wer alle rauswerfen will, löscht `/data/.session-secret` und startet neu.
+- Nach 10 Fehlversuchen ist die Anmeldung von dieser IP aus 15 Minuten gesperrt.
+- Ist `anmeldung` eingeschaltet, aber **kein** Benutzer hinterlegt, läuft das
+  Add-on offen weiter (sonst käme niemand mehr rein) und zeigt einen Warnbalken.
+
+Der Benutzername steht oben rechts; ein Klick darauf meldet ab.
+
+## Daten aus der Einsatzstatistik übernehmen
+
+Der Datenbestand liegt im Add-on unter `/data/getraenke.json` und übersteht
+Neustarts und Updates. Die bestehenden Daten holst du so herüber:
+
+1. In der Einsatzstatistik die Datei `data/getraenke.json` kopieren
+2. Im Add-on oben rechts auf **Import** klicken und diese Datei auswählen
+3. Bestätigen – der bisherige Stand wird vorher automatisch als
+   `/data/getraenke.json.backup-<zeitstempel>` gesichert
+
+> Sicherungen aus der Automaten-Zeit lassen sich weiterhin importieren. Die
+> Automaten-Felder werden dabei automatisch entfernt; Flaschen, die dort noch
+> eingetragen sind, wandern ins Lager.
+
+**Sichern** lädt jederzeit den kompletten Bestand als JSON herunter. Dieselbe
+Datei kann per Import wieder eingespielt werden – so läuft auch ein Umzug auf
+eine andere Home-Assistant-Instanz.
+
+> Nach dem Umzug in der Einsatzstatistik den Getränke-Tab entfernen oder als
+> „nur lesen" markieren, damit nicht an zwei Stellen gebucht wird.
+
+## Barcode-Scanner
+
+Der Scanner nutzt die Kamera des Geräts über die `BarcodeDetector`-API. Damit
+das funktioniert, müssen zwei Dinge stimmen:
+
+- **Sicherer Kontext:** Kamerazugriff gibt es nur über `https://` oder direkt
+  über `localhost`. Wer Home Assistant über `http://homeassistant.local:8123`
+  aufruft, bekommt keine Kamera.
+- **Browser-Unterstützung:** Chrome/Edge/Android ja, Safari und iOS derzeit
+  nicht.
+
+### Mit Cloudflare Tunnel
+
+Wird Home Assistant über einen Cloudflare Tunnel per `https://` erreicht, ist
+die erste Bedingung erfüllt – der Scanner läuft dann direkt im Ingress-Panel.
+Der Ingress liegt auf derselben Origin wie Home Assistant, deshalb greift die
+Permissions-Policy-Vorgabe `camera=self` und der iframe darf die Kamera nutzen.
+Beim ersten Start fragt der Browser einmalig nach der Freigabe; sie gilt für die
+Tunnel-Domain, nicht für `homeassistant.local`.
+
+Wichtig dabei:
+
+- Über die Tunnel-Domain aufrufen, nicht über die lokale `http://`-Adresse –
+  sonst fehlt der sichere Kontext trotz Tunnel.
+- Der optionale Port 8099 ist über den Tunnel **nicht** erreichbar und wird auch
+  nicht gebraucht. Ihn zusätzlich zu veröffentlichen hieße: ungeschützter
+  Vollzugriff aus dem Internet. Nicht tun.
+
+### Fallback ohne Tunnel
+
+Bleibt die Kamera im Ingress-Fenster blockiert, das Add-on im lokalen Netz über
+den optionalen Port direkt öffnen (`http://<home-assistant>:8099`) – dafür in
+den Add-on-Einstellungen unter **Netzwerk** den Port 8099 freigeben. Über `http`
+gibt es allerdings ebenfalls keine Kamera; das hilft nur, wenn der Port per
+eigenem Reverse Proxy mit `https` bedient wird.
+
+Unabhängig davon funktioniert im Scannen-Tab immer die **manuelle Eingabe** des
+Barcodes.
+
+### Produktdatenbank (`produkt_lookup`)
+
+Trifft der Scanner auf einen Code, der noch keiner Sorte zugeordnet ist, fragt
+das Add-on ihn bei **Open Food Facts** nach – einer offenen Produktdatenbank
+(ODbL, ohne Schlüssel oder Anmeldung). Steht dort ein Treffer, erscheint über
+der Sortenauswahl der Produktname („Coca-Cola Zero, 0,33 l"), und die Sorte mit
+dem am besten passenden Namen ist bereits vorausgewählt. Aus „blind aus der
+Liste suchen" wird damit ein Bestätigen.
+
+Was die Datenbank **nicht** abnimmt:
+
+- Die Zuordnung `Barcode → Sorte` bleibt eure Entscheidung. Gespeichert wird
+  weiterhin nur, was ihr über **Zuordnen & einbuchen** bestätigt.
+- **Kasten-Barcodes** (ITF-14 auf dem Tray) stehen in keiner öffentlichen
+  Datenbank. Deshalb wird weiterhin die Flaschen-EAN gescannt.
+- **Regionale Brauereien** fehlen bei Open Food Facts häufig – dann kommt der
+  Hinweis „nicht gefunden" und es geht manuell weiter wie bisher.
+
+### Handy als Scanner koppeln
+
+Wer am Laptop bucht, aber dort keine Kamera hat, koppelt ein Android-Handy als
+Scanner. Der Scannen-Tab hat dafür drei Betriebsarten:
+
+| Modus | Rolle |
+| --- | --- |
+| **Hier scannen** | Dieses Gerät scannt und bucht – wie bisher |
+| **Handy koppeln** | Dieses Gerät bucht, gescannt wird auf dem Handy |
+| **Als Scanner** | Dieses Gerät scannt nur und schickt die Codes weiter |
+
+So läuft es ab:
+
+1. Am buchenden Gerät **Handy koppeln → Kopplung starten**. Es erscheint ein
+   sechsstelliger Code.
+2. Am Handy denselben Tab öffnen, **Als Scanner** wählen und den Code eintippen.
+3. Kamera starten und losscannen. Jede erkannte Flasche erscheint sofort auf dem
+   buchenden Gerät und wird dort verbucht; das Handy vibriert kurz zur Bestätigung.
+
+Unbekannte Codes landen auf dem buchenden Gerät, wo die Sortenliste und die
+Tastatur sind – jeder in einer eigenen Zeile, die stehen bleibt, bis sie
+zugeordnet oder über das **×** verworfen wird. Das Handy scannt derweil einfach
+weiter; auch mehrere unbekannte Flaschen hintereinander gehen so nicht verloren.
+Über 20 offene Zuordnungen nimmt das Gerät nichts Neues mehr an und sagt das
+auch – dann erst die Liste abarbeiten.
+
+Wichtig zu wissen:
+
+- Die Kopplung liegt nur im Arbeitsspeicher und verfällt nach 30 Minuten ohne
+  Aktivität. Ein Neustart des Add-ons beendet sie ebenfalls – dann einfach neu
+  koppeln.
+- Ein Wechsel auf einen anderen Unter-Tab (z. B. **Bestand**) unterbricht nichts:
+  Es wird im Hintergrund weiter gebucht. Auch ein Reload nimmt die Kopplung
+  wieder auf, ohne bereits gebuchte Scans zu wiederholen.
+- Der Code bleibt gültig, solange die Kopplung läuft. Nach einem Reload am Handy
+  kann man sich damit wieder verbinden.
+- Beide Geräte müssen am Add-on angemeldet sein; die Kopplung selbst überträgt
+  nur Barcodes.
+- Die `https`-Bedingung für die Kamera gilt jetzt nur noch fürs Handy. Der
+  Laptop braucht keine.
+- Scannt das Handy schneller, als gebucht wird, laufen die Codes in eine
+  Warteschlange und werden der Reihe nach abgearbeitet. Bekannte Flaschen werden
+  direkt gebucht, unbekannte sammeln sich in der Zuordnen-Liste.
+- Nach 10 Fehlversuchen beim Kopplungscode ist das Verbinden von diesem Gerät
+  aus 5 Minuten gesperrt.
+- Ein iPhone taugt auch hier nicht als Scanner: Safari bringt die nötige
+  `BarcodeDetector`-API nicht mit.
+
+Der Produkt-Lookup ist der einzige Verbindungsaufbau des Add-ons nach draußen. Übertragen
+wird dabei nur der Barcode, keine Bestands- oder Benutzerdaten. Treffer werden
+eine Woche zwischengespeichert, derselbe Code kostet also nur eine Abfrage. Wer
+das Add-on strikt offline betreiben will, setzt `produkt_lookup: false` – der
+Scan funktioniert dann unverändert, nur ohne Vorschlag. Ist die Datenbank gerade
+nicht erreichbar, steht das als Hinweis in der Zuordnen-Box und der Scan läuft
+normal weiter.
+
+## Rechenregeln
+
+- Bestände werden intern in **Flaschen** geführt, gebucht wird in **Kästen**
+  (`Flaschen pro Kasten` je Sorte).
+- **Bestellempfehlung** = `Soll-Bestand − aktueller Bestand`, aufgerundet.
+- **Kassenbericht:** Ausgaben = Menge × Einkaufspreis je Kasten (der beim
+  Eingang gespeicherte Preis, damit Preisschwankungen historisch korrekt
+  bleiben). Einnahmen = Menge × Flaschen pro Kasten × Verkaufspreis je Flasche.
+
+## Sicherheit
+
+Zwei Schichten: der Ingress ist durch die Home-Assistant-Anmeldung geschützt,
+darüber hinaus hat das Add-on seine eigene Benutzeranmeldung (siehe oben).
+
+Wer den Port 8099 freigibt oder eine eigene Subdomain darauf zeigen lässt,
+umgeht den Home-Assistant-Login komplett – dann steht nur noch die Anmeldung des
+Add-ons davor. Dafür gilt:
+
+- `anmeldung` auf `immer` oder `nur_direktzugriff` lassen, niemals `aus`
+- ordentliche Passwörter vergeben, nicht `bitte-aendern`
+- die Verbindung per `https` absichern (Cloudflare Tunnel o.ä.), sonst gehen
+  Passwörter im Klartext über die Leitung
+
+Die Passwörter stehen als Klartext in den Add-on-Optionen – so wie bei
+Home-Assistant-Add-ons üblich. Wer die Add-on-Konfiguration sehen kann, ist
+ohnehin Home-Assistant-Administrator.
+
+## Fehlersuche
+
+| Symptom | Ursache / Lösung |
+| --- | --- |
+| Seite bleibt leer | Add-on-Log prüfen (**Protokoll**-Tab); startet der Node-Prozess? |
+| „Kamera nicht verfügbar" | Kein https bzw. Browser ohne `BarcodeDetector` – siehe oben. Mit Cloudflare Tunnel: über die Tunnel-Domain aufrufen, nicht über die lokale `http`-Adresse |
+| Import meldet „kein gültiges JSON" | Es wurde eine andere Datei als `getraenke.json` gewählt |
+| Daten nach Update weg | Nur wenn das Add-on **deinstalliert** wurde – dabei wird `/data` gelöscht. Vorher immer **Sichern** |
+| „Benutzername oder Passwort stimmt nicht" | Konto in den Add-on-Optionen prüfen; nach Änderungen das Add-on **neu starten** |
+| „Zu viele Fehlversuche" | 15 Minuten warten oder das Add-on neu starten |
+| Ständig wieder abgemeldet | `/data/.session-secret` nicht schreibbar – siehe Add-on-Log |
+| Warnbalken „läuft ungeschützt" | In den Optionen unter `benutzer` mindestens ein Konto anlegen |

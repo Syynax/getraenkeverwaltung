@@ -1,0 +1,63 @@
+.wrapper {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+
+.textInput {
+  flex: 1;
+  padding: 0.5rem 2.25rem 0.5rem 0.75rem;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  background: var(--card-bg, #ffffff);
+  color: var(--text-primary, #1c1d20);
+  border: 1px solid var(--border-color, #d9d4ca);
+  border-radius: var(--radius-md, 5px);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.textInput:focus {
+  outline: none;
+  border-color: var(--accent, #c8102e);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(200, 16, 46, 0.08));
+}
+
+.textInput[aria-invalid='true'] {
+  border-color: var(--signal-red, #b91c1c);
+}
+
+.pickerBtn {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  bottom: 1px;
+  width: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border-color, #d9d4ca);
+  color: var(--text-secondary, #6b6862);
+  cursor: pointer;
+  font-family: inherit;
+  border-radius: 0 var(--radius-md, 5px) var(--radius-md, 5px) 0;
+}
+
+.pickerBtn:hover {
+  color: var(--text-primary, #1c1d20);
+  background: var(--bg-secondary, #ebe7df);
+}
+
+.hiddenPicker {
+  position: absolute;
+  right: 0.5rem;
+  bottom: -0.5rem;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+}

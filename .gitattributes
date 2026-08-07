@@ -1,0 +1,4 @@
+# Shell-Skripte müssen LF behalten, sonst startet das Add-on nicht
+# ("bad interpreter: no such file or directory").
+*.sh text eol=lf
+Dockerfile text eol=lf
