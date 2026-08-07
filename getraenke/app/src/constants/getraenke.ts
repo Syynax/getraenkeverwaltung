@@ -7,10 +7,14 @@ export const KATEGORIEN = ['alkoholfrei', 'alkoholisch'] as const;
  * Buchungen aus der Automaten-Zeit im Verlauf erhalten bleiben. Neu anlegen
  * lässt sich beides nicht mehr; dafür gelten die _NEU-Listen.
  */
-export const BUCHUNGS_TYPEN = ['eingang', 'ausgang', 'auffuellung'] as const;
+export const BUCHUNGS_TYPEN = ['eingang', 'ausgang', 'schwund', 'inventur', 'auffuellung'] as const;
 export const BUCHUNGS_STANDORTE = ['lager', 'automat'] as const;
 
-export const BUCHUNGS_TYPEN_NEU = ['eingang', 'ausgang'] as const;
+/**
+ * Was sich von Hand buchen lässt. `inventur` entsteht nur über die Inventur,
+ * `auffuellung` stammt aus der Automaten-Zeit.
+ */
+export const BUCHUNGS_TYPEN_NEU = ['eingang', 'ausgang', 'schwund'] as const;
 export const BUCHUNGS_STANDORTE_NEU = ['lager'] as const;
 
 export const EVENT_STATI = ['geplant', 'in-bearbeitung', 'eingekauft', 'erledigt', 'abgesagt'] as const;

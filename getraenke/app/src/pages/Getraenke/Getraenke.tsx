@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useGetraenke } from '../../hooks/useGetraenke';
 import { useScanKopplung } from '../../hooks/useScanKopplung';
 import { EVENT_STATI, EVENT_POSITION_TYPEN } from '../../constants/getraenke';
-import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, Kategorie, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData } from '../../types/getraenke';
+import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, Kategorie, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData, InventurAbweichung } from '../../types/getraenke';
 import { GermanDateInput } from '../../components';
 import { lookupBarcode } from '../../services/api';
 import { ScanTab, type ScanFeedback, type OffenerCode } from './ScanTab';
@@ -110,7 +110,7 @@ const gebindeAusMenge = (menge: string | null | undefined): number | null => {
   return zahl >= 1 && zahl <= 100 ? zahl : null;
 };
 
-type ModalType = 'none' | 'neueSorte' | 'buchung' | 'bestandKorrektur' | 'event';
+type ModalType = 'none' | 'neueSorte' | 'buchung' | 'bestandKorrektur' | 'event' | 'inventur';
 type SubTab = 'bestand' | 'einkauf' | 'scan' | 'events' | 'auswertung';
 
 const SUB_TABS: { id: SubTab; label: string; icon: string }[] = [
@@ -156,6 +156,8 @@ export const Getraenke: React.FC = () => {
     deleteSorte,
     setBestand,
     buchen,
+    stornieren,
+    inventur,
     verbucheEinkauf,
     createEvent,
     updateEvent,
@@ -270,6 +272,44 @@ export const Getraenke: React.FC = () => {
 
   // Einkaufsliste ref for export
   const einkaufslisteRef = useRef<HTMLDivElement>(null);
+
+  // Inventur: gezählte Flaschen je Sorte, leer heisst „noch nicht gezählt".
+  const [inventurZaehlung, setInventurZaehlung] = useState<Record<number, number | ''>>({});
+  const [inventurNotiz, setInventurNotiz] = useState('');
+  const [inventurErgebnis, setInventurErgebnis] = useState<InventurAbweichung[] | null>(null);
+
+  const openInventur = () => {
+    // Mit dem aktuellen Stand vorbelegen: wer nichts ändert, bestätigt ihn.
+    const start: Record<number, number | ''> = {};
+    for (const b of bestand) start[b.sorte.id] = b.lager;
+    setInventurZaehlung(start);
+    setInventurNotiz(`Inventur ${new Date().toLocaleDateString('de-DE')}`);
+    setInventurErgebnis(null);
+    setActionError(null);
+    setModal('inventur');
+  };
+
+  const handleInventurSubmit = async () => {
+    const zeilen = bestand
+      .map(b => ({ sorteId: b.sorte.id, flaschen: inventurZaehlung[b.sorte.id] }))
+      .filter((z): z is { sorteId: number; flaschen: number } => typeof z.flaschen === 'number');
+
+    if (zeilen.length === 0) {
+      setActionError('Es wurde nichts gezählt.');
+      return;
+    }
+
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      const ergebnis = await inventur(zeilen, inventurNotiz.trim() || undefined);
+      setInventurErgebnis(ergebnis.abweichungen);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Inventur fehlgeschlagen');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   // Warnt vor einer zweiten „Cola", blockiert aber nichts – Sorten dürfen
   // absichtlich ähnlich heissen (0,33 l vs 0,5 l).
@@ -755,8 +795,33 @@ export const Getraenke: React.FC = () => {
     switch (typ) {
       case 'eingang': return 'Eingang';
       case 'ausgang': return 'Ausgang';
+      case 'schwund': return 'Schwund';
+      case 'inventur': return 'Inventur';
       case 'auffuellung': return 'Auffüllung';
       default: return typ;
+    }
+  };
+
+  /** Inventur und die alten Auffüllungen führen Flaschen, alles andere Kästen. */
+  const mengeText = (b: { typ: string; menge: number }) => {
+    if (b.typ === 'inventur') {
+      return `${b.menge > 0 ? '+' : ''}${b.menge} Fl.`;
+    }
+    return `${b.menge} ${b.typ === 'auffuellung' ? 'Fl.' : 'Kästen'}`;
+  };
+
+  const handleStornieren = async (id: number, sorteName: string) => {
+    if (!confirm(`Buchung für ${sorteName} stornieren?\n\nDer Bestand wird zurückgedreht. Die Buchung bleibt im Verlauf sichtbar.`)) {
+      return;
+    }
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await stornieren(id);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Stornieren fehlgeschlagen');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -1005,7 +1070,14 @@ export const Getraenke: React.FC = () => {
       {activeTab === 'bestand' && (
       <div className={styles.mainGrid}>
         <div className={styles.tableCard}>
-          <h3><i className="fas fa-warehouse" style={{ marginRight: '0.5rem' }}></i>Lagerbestand</h3>
+          <div className={styles.sectionHeader}>
+            <h3><i className="fas fa-warehouse" style={{ marginRight: '0.5rem' }}></i>Lagerbestand</h3>
+            {bestand.length > 0 && (
+              <button className={styles.btnSecondary} onClick={openInventur}>
+                <i className="fas fa-clipboard-check"></i> Inventur
+              </button>
+            )}
+          </div>
           {bestand.length === 0 ? (
             <div className={styles.emptyState}>
               <i className="fas fa-box-open"></i>
@@ -1313,6 +1385,9 @@ export const Getraenke: React.FC = () => {
       {/* Letzte Buchungen */}
       <div className={styles.buchungenCard}>
         <h3><i className="fas fa-clock-rotate-left" style={{ marginRight: '0.5rem' }}></i>Letzte Buchungen</h3>
+        {/* Ein abgelehnter Storno muss hier sichtbar werden – sonst passiert
+            beim Klick scheinbar einfach nichts. */}
+        {actionError && modal === 'none' && <div className={styles.errorMessage}>{actionError}</div>}
         {buchungen.length === 0 ? (
           <div className={styles.emptyState}>
             <i className="fas fa-inbox"></i>
@@ -1327,29 +1402,51 @@ export const Getraenke: React.FC = () => {
                   <th>Sorte</th>
                   <th>Typ</th>
                   <th>Menge</th>
-                  <th>Standort</th>
+                  <th>Wer</th>
                   <th>Notiz</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {buchungen.slice(0, 20).map(b => (
-                  <tr key={b.id}>
+                  <tr key={b.id} className={b.storniert ? styles.buchungStorniert : ''}>
                     <td style={{ whiteSpace: 'nowrap' }}>{formatDatum(b.datum)}</td>
                     <td>{b.sorteName}</td>
                     <td>
                       <span className={`${styles.buchungTyp} ${
                         b.typ === 'eingang' ? styles.typEingang :
                         b.typ === 'ausgang' ? styles.typAusgang :
+                        b.typ === 'schwund' ? styles.typSchwund :
+                        b.typ === 'inventur' ? styles.typInventur :
                         styles.typAuffuellung
                       }`}>
                         {buchungTypLabel(b.typ)}
                       </span>
                     </td>
-                    {/* Auffüllungen und der Standort "Automat" stammen aus der
-                        Automaten-Zeit und bleiben nur noch im Verlauf stehen. */}
-                    <td>{b.menge} {b.typ === 'auffuellung' ? 'Fl.' : 'Kästen'}</td>
-                    <td>{b.standort === 'lager' ? 'Lager' : 'Automat'}</td>
-                    <td>{b.notiz || '—'}</td>
+                    {/* Bei Inventur und Auffüllung steht in menge eine Zahl in
+                        Flaschen, sonst in Kästen. */}
+                    <td>{mengeText(b)}</td>
+                    <td>{b.benutzer || '—'}</td>
+                    <td>
+                      {b.notiz || '—'}
+                      {b.storniert && (
+                        <span className={styles.stornoHinweis}>
+                          storniert{b.storniertVon ? ` von ${b.storniertVon}` : ''}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {!b.storniert && b.typ !== 'inventur' && (
+                        <button
+                          className={styles.stornoBtn}
+                          title="Diese Buchung stornieren"
+                          disabled={actionLoading}
+                          onClick={() => handleStornieren(b.id, b.sorteName)}
+                        >
+                          <i className="fas fa-rotate-left"></i>
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1396,6 +1493,12 @@ export const Getraenke: React.FC = () => {
                 <span className={styles.kassenLabel}>{kassenbericht.gesamtGewinn >= 0 ? 'Gewinn' : 'Verlust'}</span>
                 <span className={styles.kassenWert}>{kassenbericht.gesamtGewinn.toFixed(2)} €</span>
               </div>
+              {kassenbericht.gesamtSchwund > 0 && (
+                <div className={styles.kassenCard} title="Wert der abgeschriebenen Ware – kein Geldfluss, zählt nicht in den Gewinn">
+                  <span className={styles.kassenLabel}>Schwund</span>
+                  <span className={styles.kassenWert}>{kassenbericht.gesamtSchwund.toFixed(2)} €</span>
+                </div>
+              )}
             </div>
             {kassenChartData && (
               <div className={styles.chartWrapper}>
@@ -1416,6 +1519,114 @@ export const Getraenke: React.FC = () => {
         </div>
       )}
       </>
+      )}
+
+      {/* Inventur */}
+      {modal === 'inventur' && (
+        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
+          <div className={`${styles.modal} ${styles.modalLarge}`} onClick={e => e.stopPropagation()}>
+            <h2>Inventur</h2>
+            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
+
+            {inventurErgebnis ? (
+              <>
+                {inventurErgebnis.length === 0 ? (
+                  <div className={styles.hinweisBox}>
+                    <i className="fas fa-circle-check"></i>
+                    <span>Keine Abweichungen – der Bestand stimmt.</span>
+                  </div>
+                ) : (
+                  <>
+                    <p className={styles.mehrFelderHinweis}>
+                      {inventurErgebnis.length} Abweichung{inventurErgebnis.length === 1 ? '' : 'en'} gebucht.
+                      Sie stehen als eigene Zeilen im Verlauf.
+                    </p>
+                    <div className={styles.tableWrapper}>
+                      <table className={styles.table}>
+                        <thead>
+                          <tr><th>Sorte</th><th>War</th><th>Gezählt</th><th>Differenz</th></tr>
+                        </thead>
+                        <tbody>
+                          {inventurErgebnis.map(a => (
+                            <tr key={a.sorteId}>
+                              <td>{a.sorteName}</td>
+                              <td>{a.vorher} Fl.</td>
+                              <td>{a.gezaehlt} Fl.</td>
+                              <td className={a.differenz < 0 ? styles.stockValueNull : styles.stockValueWarn}>
+                                {a.differenz > 0 ? '+' : ''}{a.differenz} Fl.
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+                <div className={styles.modalActions}>
+                  <button className={styles.btnPrimary} onClick={() => setModal('none')}>Schliessen</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className={styles.mehrFelderHinweis}>
+                  Gezählte <strong>Flaschen</strong> je Sorte eintragen – vorbelegt ist der aktuelle
+                  Stand. Jede Abweichung wird als eigene Buchung festgehalten, damit am Jahresende
+                  nachvollziehbar bleibt, wo etwas gefehlt hat.
+                </p>
+
+                <div className={styles.inventurListe}>
+                  {bestand.map(b => {
+                    const gezaehlt = inventurZaehlung[b.sorte.id];
+                    const differenz = typeof gezaehlt === 'number' ? gezaehlt - b.lager : 0;
+                    return (
+                      <div key={b.sorte.id} className={styles.inventurZeile}>
+                        <div className={styles.inventurName}>
+                          <strong>{b.sorte.name}</strong>
+                          <span className={styles.einkaufMeta}>
+                            Soll: {formatBestand(b.lager, b.sorte.flaschenProKasten)}
+                          </span>
+                        </div>
+                        <input
+                          type="number"
+                          min={0}
+                          inputMode="numeric"
+                          className={styles.inventurFeld}
+                          value={gezaehlt ?? ''}
+                          placeholder="—"
+                          aria-label={`Gezählte Flaschen ${b.sorte.name}`}
+                          onChange={e => setInventurZaehlung(prev => ({
+                            ...prev,
+                            [b.sorte.id]: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0),
+                          }))}
+                        />
+                        <span className={`${styles.inventurDiff} ${differenz === 0 ? '' : differenz < 0 ? styles.stockValueNull : styles.stockValueWarn}`}>
+                          {typeof gezaehlt === 'number' && differenz !== 0 ? `${differenz > 0 ? '+' : ''}${differenz}` : ''}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label>Notiz</label>
+                  <input
+                    type="text"
+                    value={inventurNotiz}
+                    onChange={e => setInventurNotiz(e.target.value)}
+                    placeholder="z.B. Jahresinventur 2026"
+                  />
+                </div>
+
+                <div className={styles.modalActions}>
+                  <button className={styles.btnSecondary} onClick={() => setModal('none')}>Abbrechen</button>
+                  <button className={styles.btnPrimary} onClick={handleInventurSubmit} disabled={actionLoading}>
+                    {actionLoading ? 'Übernehmen…' : 'Zählung übernehmen'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Neue Sorte / Sorte bearbeiten */}
@@ -1586,7 +1797,8 @@ export const Getraenke: React.FC = () => {
                   onChange={e => setBuchungForm({ ...buchungForm, typ: e.target.value as BuchungsTyp })}
                 >
                   <option value="eingang">Eingang (Lieferung)</option>
-                  <option value="ausgang">Ausgang (Entnahme)</option>
+                  <option value="ausgang">Ausgang (Verkauf)</option>
+                  <option value="schwund">Schwund / Bruch (kein Verkauf)</option>
                 </select>
               </div>
               <div className={styles.formGroup}>

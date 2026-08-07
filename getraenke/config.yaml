@@ -1,5 +1,5 @@
 name: Getränkeverwaltung
-version: "1.4.0"
+version: "1.5.0"
 slug: getraenke
 description: Getränkebestand, Einkauf, Events und Kassenbericht für die Feuerwehr
 url: https://github.com/Syynax/getraenkeverwaltung/tree/main/getraenke
@@ -31,6 +31,8 @@ options:
     - name: admin
       passwort: bitte-aendern
   produkt_lookup: true
+  automatische_sicherung: true
+  sicherungen_behalten: 14
   log_level: info
 schema:
   titel: str
@@ -47,4 +49,7 @@ schema:
   # Unbekannte Barcodes bei Open Food Facts nachschlagen. Einziger ausgehender
   # Verbindungsaufbau des Add-ons – abschaltbar für den Offline-Betrieb.
   produkt_lookup: bool
+  # Täglich eine Kopie der Daten in /data/sicherungen ablegen.
+  automatische_sicherung: bool
+  sicherungen_behalten: int(1,365)
   log_level: list(trace|debug|info|notice|warning|error|fatal)

@@ -342,6 +342,109 @@
   color: var(--text-muted, #9ca3af);
 }
 
+/* Verlauf: Storno und die zusätzlichen Buchungsarten. */
+.buchungStorniert td {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.buchungStorniert .stornoHinweis {
+  text-decoration: none;
+}
+
+.stornoHinweis {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #dc2626;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stornoBtn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: var(--text-muted, #9ca3af);
+  background: none;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.stornoBtn:hover:not(:disabled) {
+  color: #dc2626;
+  border-color: #dc2626;
+}
+
+.stornoBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.typSchwund {
+  background: rgba(217, 119, 6, 0.14);
+  color: #d97706;
+}
+
+.typInventur {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+/* Inventur: eine Zeile je Sorte, gezählt wird in Flaschen. */
+.inventurListe {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  max-height: 45vh;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+  padding-right: 0.25rem;
+}
+
+.inventurZeile {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary, #f9fafb);
+}
+
+.inventurName {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inventurFeld {
+  width: 5.5rem;
+  padding: 0.4rem 0.5rem;
+  text-align: right;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #1f2937);
+  background: var(--card-bg, #ffffff);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: var(--radius-md);
+}
+
+.inventurDiff {
+  width: 3rem;
+  text-align: right;
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Main Grid (Lager + Einkaufsliste) */
 .mainGrid {
   display: grid;

@@ -37,6 +37,14 @@ export interface Buchung {
   notiz: string | null;
   /** Einkaufspreis €/Kasten zum Zeitpunkt des Eingangs (nur bei typ 'eingang'). */
   einkaufspreis?: number;
+  /** Verkaufspreis €/Flasche zum Zeitpunkt des Abgangs – hält den Kassenbericht
+   *  bei späteren Preisänderungen historisch korrekt. */
+  verkaufspreis?: number;
+  /** Wer gebucht hat, sofern eine Anmeldung aktiv ist. */
+  benutzer?: string;
+  storniert?: boolean;
+  storniertAm?: string;
+  storniertVon?: string;
 }
 
 export interface EventPosition {
@@ -128,6 +136,8 @@ export interface KassenberichtMonat {
   monat: string;
   einnahmen: number;
   ausgaben: number;
+  /** Wert der Ware, die als Schwund abgeschrieben wurde. Kein Geldfluss. */
+  schwund: number;
   gewinn: number;
 }
 
@@ -135,7 +145,27 @@ export interface Kassenbericht {
   monate: KassenberichtMonat[];
   gesamtEinnahmen: number;
   gesamtAusgaben: number;
+  gesamtSchwund: number;
   gesamtGewinn: number;
+}
+
+/** Eine Zeile der Inventurzählung. */
+export interface InventurZeile {
+  sorteId: number;
+  flaschen: number;
+}
+
+export interface InventurAbweichung {
+  sorteId: number;
+  sorteName: string;
+  vorher: number;
+  gezaehlt: number;
+  differenz: number;
+}
+
+export interface InventurErgebnis {
+  abweichungen: InventurAbweichung[];
+  gezaehlteSorten: number;
 }
 
 /** Kompletter Datenbestand – Format von /api/export und /api/import. */

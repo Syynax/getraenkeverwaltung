@@ -36,6 +36,8 @@ benutzer:
   - name: kasse
     passwort: NochEinsAnderes
 produkt_lookup: true
+automatische_sicherung: true
+sicherungen_behalten: 14
 log_level: info
 ```
 
@@ -47,6 +49,8 @@ log_level: info
 | `sitzungsdauer_tage` | Wie lange man angemeldet bleibt (1–365, Standard 30) |
 | `benutzer` | Liste aus Name + Passwort; über **+** kommen weitere dazu |
 | `produkt_lookup` | Unbekannte Barcodes bei Open Food Facts nachschlagen (Standard `true`) |
+| `automatische_sicherung` | Täglich eine Kopie in `/data/sicherungen` ablegen (Standard `true`) |
+| `sicherungen_behalten` | Wie viele Tagessicherungen aufgehoben werden (1–365, Standard 14) |
 | `log_level` | Ab `warning` werden keine Request-Logs mehr geschrieben |
 
 ## Anmeldung
@@ -115,6 +119,39 @@ einen Eingang an und schreibt den Preis auf der Sorte fort.
 
 Der Entwurf übersteht ein Neuladen der Seite – im Getränkemarkt mit wackligem
 Netz geht damit nichts verloren. **Mengen zurücksetzen** leert ihn wieder.
+
+## Wo die Daten liegen und wie sie gesichert werden
+
+Der Bestand liegt in `/data/getraenke.json`. `/data` ist das persistente Volume
+des Add-ons: **Stoppen, Neustarten und Updates überstehen die Daten unverändert.**
+Gelöscht wird `/data` nur beim **Deinstallieren** des Add-ons.
+
+Damit das auch bei einem Stromausfall hält, ist einiges eingebaut:
+
+- **Atomar geschrieben.** Jede Änderung geht erst in eine Nebendatei, wird auf
+  die Platte durchgereicht (`fsync`) und dann umbenannt. Ein Absturz mitten im
+  Schreiben lässt immer die vollständige alte Datei zurück, nie eine halbe.
+- **Sauberes Herunterfahren.** Auf das Stoppsignal von Home Assistant nimmt das
+  Add-on keine neuen Anfragen mehr an, bringt laufende Buchungen zu Ende und
+  beendet sich erst dann.
+- **Keine stille Leerung.** Ist die Datei beschädigt, startet das Add-on
+  **bewusst nicht** und schreibt nichts. Im Protokoll steht, was los ist und wo
+  die Sicherungen liegen. Früher wäre in so einem Fall mit leerem Bestand
+  weitergelaufen – und die erste Buchung hätte alles überschrieben.
+- **Tägliche Sicherung** unter `/data/sicherungen/getraenke-JJJJ-MM-TT.json`,
+  standardmässig 14 Stück. Geschrieben wird höchstens eine pro Kalendertag.
+- Beim Start steht im Protokoll, wie viele Sorten, Bestände und Buchungen
+  geladen wurden – ein Blick genügt, um zu sehen, dass alles da ist.
+
+### Kaputte Datei wiederherstellen
+
+1. Im **Protokoll** des Add-ons nachsehen, welche Datei betroffen ist
+2. Add-on stoppen
+3. Über den Dateizugriff (z.B. das Add-on „File editor") die jüngste Datei aus
+   `/data/sicherungen/` nach `/data/getraenke.json` kopieren
+4. Add-on starten – im Protokoll erscheinen wieder die geladenen Zahlen
+
+Alternativ eine heruntergeladene **Sicherung** über den Import einspielen.
 
 ## Daten aus der Einsatzstatistik übernehmen
 
@@ -250,14 +287,47 @@ Scan funktioniert dann unverändert, nur ohne Vorschlag. Ist die Datenbank gerad
 nicht erreichbar, steht das als Hinweis in der Zuordnen-Box und der Scan läuft
 normal weiter.
 
+## Buchen, Stornieren, Inventur
+
+Es gibt drei Buchungsarten:
+
+| Art | Wirkung |
+| --- | --- |
+| **Eingang** | Ware kommt ins Lager, zählt als Ausgabe im Kassenbericht |
+| **Ausgang** | Verkauf, zählt als Einnahme |
+| **Schwund / Bruch** | Ware verlässt das Lager, **ohne** Einnahme – etwa kaputte Flaschen oder Freigetränke |
+
+Schwund taucht im Kassenbericht als eigene Kachel auf: der Wert, der in der
+Kasse fehlt. In den Gewinn geht er nicht ein, denn es ist kein Geld geflossen.
+
+**Stornieren:** In **Auswertung → Letzte Buchungen** hat jede Zeile einen
+Rückwärtspfeil. Der dreht die Bestandswirkung zurück; die Buchung bleibt
+durchgestrichen stehen und zählt nirgends mehr mit. Gelöscht wird nichts – eine
+Kassenprüfung soll sehen können, dass korrigiert wurde. Würde der Bestand durch
+den Storno negativ, wird er abgelehnt; dann ist die Ware zwischenzeitlich
+ausgebucht worden und der Weg führt über **Bestand korrigieren**.
+
+**Inventur:** Im Bestand-Tab oben rechts. Für jede Sorte die gezählten
+**Flaschen** eintragen – vorbelegt ist der aktuelle Stand, wer nichts ändert,
+bestätigt ihn. Jede Abweichung wird als eigene Buchung vom Typ *Inventur*
+festgehalten, statt den Bestand stillschweigend zu überschreiben. So bleibt am
+Jahresende nachvollziehbar, wo etwas gefehlt hat. Inventurbuchungen sind
+geldneutral und verändern weder Kassenbericht noch Verbrauchsstatistik.
+
+Ist eine Anmeldung aktiv, steht bei jeder Buchung, wer sie gemacht hat.
+
 ## Rechenregeln
 
 - Bestände werden intern in **Flaschen** geführt, gebucht wird in **Kästen**
   (`Flaschen pro Kasten` je Sorte).
 - **Bestellempfehlung** = `Soll-Bestand − aktueller Bestand`, aufgerundet.
-- **Kassenbericht:** Ausgaben = Menge × Einkaufspreis je Kasten (der beim
-  Eingang gespeicherte Preis, damit Preisschwankungen historisch korrekt
-  bleiben). Einnahmen = Menge × Flaschen pro Kasten × Verkaufspreis je Flasche.
+- **Kassenbericht:** Ausgaben = Menge × Einkaufspreis je Kasten. Einnahmen =
+  Menge × Flaschen pro Kasten × Verkaufspreis je Flasche.
+- **Beide Preise werden historisch geführt:** Es zählt der Preis, der zum
+  Zeitpunkt der Buchung galt und dort mitgespeichert wurde. Eine spätere
+  Preisänderung verschiebt die Zahlen vergangener Monate deshalb nicht mehr.
+  Buchungen aus der Zeit vor Version 1.5.0 haben keinen gespeicherten
+  Verkaufspreis; für sie gilt weiterhin der aktuelle Sortenpreis.
 
 ## Sicherheit
 
@@ -285,6 +355,8 @@ ohnehin Home-Assistant-Administrator.
 | „Kamera nicht verfügbar" | Kein https bzw. Browser ohne `BarcodeDetector` – siehe oben. Mit Cloudflare Tunnel: über die Tunnel-Domain aufrufen, nicht über die lokale `http`-Adresse |
 | Import meldet „kein gültiges JSON" | Es wurde eine andere Datei als `getraenke.json` gewählt |
 | Daten nach Update weg | Nur wenn das Add-on **deinstalliert** wurde – dabei wird `/data` gelöscht. Vorher immer **Sichern** |
+| Add-on startet nicht, Protokoll meldet „Datenbestand ist beschädigt" | Absicht – so bleibt die Datei reparierbar. Siehe „Kaputte Datei wiederherstellen" |
+| Storno wird abgelehnt | Der Bestand würde negativ; die Ware ist schon ausgebucht. Stattdessen **Bestand korrigieren** |
 | „Benutzername oder Passwort stimmt nicht" | Konto in den Add-on-Optionen prüfen; nach Änderungen das Add-on **neu starten** |
 | „Zu viele Fehlversuche" | 15 Minuten warten oder das Add-on neu starten |
 | Ständig wieder abgemeldet | `/data/.session-secret` nicht schreibbar – siehe Add-on-Log |

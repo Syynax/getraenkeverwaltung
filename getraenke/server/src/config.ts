@@ -24,6 +24,8 @@ interface AddonOptions {
   sitzungsdauer_tage?: unknown;
   benutzer?: unknown;
   produkt_lookup?: unknown;
+  automatische_sicherung?: unknown;
+  sicherungen_behalten?: unknown;
   log_level?: unknown;
 }
 
@@ -75,6 +77,18 @@ const jaNein = (wert: unknown, standard: boolean): boolean => {
  * unverändert weiter, nur ohne Namensvorschlag.
  */
 export const PRODUKT_LOOKUP = jaNein(optionen.produkt_lookup ?? process.env.PRODUKT_LOOKUP, true);
+
+/** Einmal am Tag eine Kopie der Daten in /data/sicherungen ablegen. */
+export const AUTOMATISCHE_SICHERUNG = jaNein(
+  optionen.automatische_sicherung ?? process.env.AUTOMATISCHE_SICHERUNG,
+  true,
+);
+
+const behaltenRoh = Number(optionen.sicherungen_behalten ?? process.env.SICHERUNGEN_BEHALTEN ?? 14);
+/** Wie viele Tagessicherungen aufgehoben werden, bevor die älteste weicht. */
+export const SICHERUNGEN_BEHALTEN = Number.isFinite(behaltenRoh)
+  ? Math.min(365, Math.max(1, Math.trunc(behaltenRoh)))
+  : 14;
 
 export const LOG_LEVEL = (text(optionen.log_level) || process.env.LOG_LEVEL || 'info').toLowerCase();
 

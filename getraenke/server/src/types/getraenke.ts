@@ -38,6 +38,16 @@ export interface Buchung {
   /** Einkaufspreis €/Kasten zum Zeitpunkt des Eingangs (nur bei typ 'eingang').
    *  Macht den Kassenbericht bei schwankenden Preisen historisch korrekt. */
   einkaufspreis?: number;
+  /** Verkaufspreis €/Flasche zum Zeitpunkt des Abgangs (bei 'ausgang' und
+   *  'schwund'). Ohne ihn würde eine spätere Preiserhöhung die Einnahmen
+   *  vergangener Monate rückwirkend verändern. */
+  verkaufspreis?: number;
+  /** Wer gebucht hat – nur gesetzt, wenn eine Anmeldung aktiv ist. */
+  benutzer?: string;
+  /** Storniert: bleibt im Verlauf stehen, zählt aber nirgends mehr mit. */
+  storniert?: boolean;
+  storniertAm?: string;
+  storniertVon?: string;
 }
 
 export interface EventPosition {

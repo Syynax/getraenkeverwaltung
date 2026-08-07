@@ -5,7 +5,8 @@ import morgan from 'morgan';
 import fs from 'fs/promises';
 import path from 'path';
 import getraenkeRouter from './routes/getraenke';
-import { withFileLock, loadJsonFile, saveJsonFile } from './utils/fileStore';
+import { withFileLock, loadJsonFile, saveJsonFile, DatenDefektError, laufendeSchreibvorgaenge, raeumeAbbruchReste } from './utils/fileStore';
+import { starteSicherungsTakt, raeumeImportSicherungen, sicherungsOrdner } from './utils/sicherung';
 import { migriereAutomatWeg, entferneAutomatFelder, type AltDaten } from './utils/migration';
 import type { GetraenkeData } from './types/getraenke';
 import {
@@ -18,6 +19,8 @@ import {
   ANMELDE_MODUS,
   BENUTZER,
   ANMELDUNG_WARNUNG,
+  AUTOMATISCHE_SICHERUNG,
+  SICHERUNGEN_BEHALTEN,
 } from './config';
 import {
   requireAuth,
@@ -218,27 +221,111 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: 'Interner Serverfehler' });
 });
 
+/**
+ * Beim Start einmal nachsehen, ob die Datendatei lesbar ist – und wie viel
+ * drinsteht. Ist sie beschädigt, wird hier abgebrochen, **bevor** irgendetwas
+ * geschrieben werden kann: eine kaputte Datei lässt sich reparieren, eine
+ * überschriebene nicht.
+ */
+async function pruefeDatenbestand(): Promise<void> {
+  try {
+    const daten = await loadJsonFile<Partial<GetraenkeData> | null>(DATA_FILE, null);
+    if (!daten) {
+      console.log('📄 Noch keine Daten vorhanden – wird beim ersten Speichern angelegt.');
+      return;
+    }
+    console.log(
+      `📄 Datenbestand: ${daten.sorten?.length ?? 0} Sorten, ` +
+      `${daten.bestand?.length ?? 0} Bestände, ${daten.buchungen?.length ?? 0} Buchungen, ` +
+      `${daten.events?.length ?? 0} Events`,
+    );
+  } catch (err) {
+    if (err instanceof DatenDefektError) {
+      console.error('❌ Der Datenbestand ist beschädigt. Das Add-on startet bewusst NICHT,');
+      console.error('   damit die Datei nicht überschrieben wird.');
+      console.error(`   Datei:       ${err.datei}`);
+      console.error(`   Grund:       ${err.ursache instanceof Error ? err.ursache.message : err.ursache}`);
+      console.error(`   Sicherungen: ${sicherungsOrdner(DATA_FILE)}`);
+      console.error('   Zum Wiederherstellen die jüngste Sicherung über die Datei kopieren und neu starten.');
+    }
+    throw err;
+  }
+}
+
 async function start() {
   // Datenverzeichnis sicherstellen (im Add-on ist das /data).
   await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
+
+  // Ein abgebrochener Schreibvorgang hinterlässt eine .tmp-Datei. Die echte
+  // Datei ist dann unversehrt – die Nebendatei kann weg.
+  if (await raeumeAbbruchReste(DATA_FILE)) {
+    console.log('🧹 Reste eines abgebrochenen Schreibvorgangs entfernt.');
+  }
+
+  await pruefeDatenbestand();
 
   // Altbestände auf "nur noch Lager" umstellen. Läuft nur beim ersten Start
   // nach dem Update; danach findet sie nichts mehr zu tun.
   await migriereAutomatWeg(DATA_FILE);
 
+  let stoppeSicherung: (() => void) | null = null;
+  if (AUTOMATISCHE_SICHERUNG) {
+    stoppeSicherung = starteSicherungsTakt(DATA_FILE, SICHERUNGEN_BEHALTEN);
+    const geloescht = await raeumeImportSicherungen(DATA_FILE, SICHERUNGEN_BEHALTEN);
+    if (geloescht > 0) console.log(`🧹 ${geloescht} alte Import-Sicherungen entfernt`);
+  }
+
   if (ANMELDUNG_WARNUNG) {
     console.warn(`⚠️  ${ANMELDUNG_WARNUNG}`);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🥤 Getränkeverwaltung läuft auf Port ${PORT}`);
     console.log(`📁 Daten: ${DATA_FILE}`);
     console.log(`🖥️  Frontend: ${PUBLIC_DIR}`);
     console.log(`🔐 Anmeldung: ${ANMELDE_MODUS} (${BENUTZER.length} Benutzer konfiguriert)`);
+    console.log(`💾 Automatische Sicherung: ${AUTOMATISCHE_SICHERUNG ? `täglich, ${SICHERUNGEN_BEHALTEN} Stück` : 'aus'}`);
   });
+
+  /**
+   * Home Assistant stoppt das Add-on mit SIGTERM. Ohne Zutun würde der Prozess
+   * sofort sterben – auch mitten in einer Buchung. Deshalb: keine neuen
+   * Verbindungen mehr annehmen, laufende Schreibvorgänge zu Ende bringen, dann
+   * erst beenden. Der atomare Schreibvorgang schützt zusätzlich, aber so geht
+   * nicht einmal die gerade laufende Buchung verloren.
+   */
+  let faehrtHerunter = false;
+  const herunterfahren = (signal: string) => {
+    if (faehrtHerunter) return;
+    faehrtHerunter = true;
+    console.log(`⏹️  ${signal} empfangen – fahre herunter …`);
+
+    stoppeSicherung?.();
+    server.close(() => console.log('   Keine offenen Verbindungen mehr.'));
+
+    const wartenBisFertig = (versuche = 0) => {
+      const offen = laufendeSchreibvorgaenge();
+      if (offen === 0) {
+        console.log('   Alle Daten geschrieben. Tschüss.');
+        process.exit(0);
+      }
+      if (versuche >= 100) {
+        console.warn(`   ${offen} Schreibvorgang/-vorgänge hängen – beende trotzdem.`);
+        process.exit(0);
+      }
+      console.log(`   Warte auf ${offen} Schreibvorgang/-vorgänge …`);
+      setTimeout(() => wartenBisFertig(versuche + 1), 100);
+    };
+    wartenBisFertig();
+  };
+
+  process.on('SIGTERM', () => herunterfahren('SIGTERM'));
+  process.on('SIGINT', () => herunterfahren('SIGINT'));
 }
 
 start().catch(err => {
-  console.error('Start fehlgeschlagen:', err);
+  if (!(err instanceof DatenDefektError)) {
+    console.error('Start fehlgeschlagen:', err);
+  }
   process.exit(1);
 });

@@ -4,6 +4,15 @@ import type { GetraenkeData, Sorte, Bestand, Buchung, BesonderesEvent, EventPosi
 import { KATEGORIEN, BUCHUNGS_TYPEN_NEU, BUCHUNGS_STANDORTE_NEU, EVENT_STATI, EVENT_POSITION_TYPEN } from '../constants/getraenke';
 import { withFileLock, loadJsonFile, saveJsonFile } from '../utils/fileStore';
 import { erzeugeBremse, sperrText } from '../utils/bremse';
+import type { AuthRequest } from '../auth';
+import {
+  empfohleneBestellung,
+  unterWarnschwelle,
+  verbrauchProMonat,
+  kassenbericht as berechneKassenbericht,
+  bestandsAenderung,
+  SORTE_VORGABEN,
+} from '../domain/berechnung';
 import { lookupProdukt, findeSortenVorschlag, type ProduktInfo } from '../services/produktLookup';
 import { erzeugeSitzung, koppele, scanMelden, warteAufScans, beende } from '../services/scanSessions';
 import { DATA_FILE, PRODUKT_LOOKUP } from '../config';
@@ -38,6 +47,9 @@ async function loadData(): Promise<GetraenkeData> {
 async function saveData(data: GetraenkeData): Promise<void> {
   await saveJsonFile(DATA_PATH, data);
 }
+
+/** Angemeldeter Benutzer, sofern eine Anmeldung aktiv ist. */
+const benutzerVon = (req: Request): string | undefined => (req as AuthRequest).benutzer;
 
 function nextId(items: { id: number }[]): number {
   if (items.length === 0) return 1;
@@ -115,8 +127,8 @@ function normalizeEventItems(items: unknown[], sorten: Sorte[]): EventPosition[]
 
 /**
  * Pflicht sind nur Name, Kategorie und Gebindegrösse – alles, was man beim
- * Aufnehmen einer neuen Sorte am Regal wirklich weiss. Der Rest bekommt
- * brauchbare Vorgaben; der Einkaufspreis trägt sich beim ersten Eingang
+ * Aufnehmen einer neuen Sorte am Regal wirklich weiss. Der Rest bekommt die
+ * Vorgaben aus der Domäne; der Einkaufspreis trägt sich beim ersten Eingang
  * ohnehin selbst nach.
  */
 const zahlOder = (wert: unknown, vorgabe: number): number => {
@@ -124,13 +136,6 @@ const zahlOder = (wert: unknown, vorgabe: number): number => {
   const zahl = Number(wert);
   return Number.isFinite(zahl) ? zahl : vorgabe;
 };
-
-export const SORTE_VORGABEN = {
-  warnschwelle: 2,
-  sollBestand: 4,
-  einkaufspreis: 0,
-  verkaufspreis: 0,
-} as const;
 
 const sorteValidation = [
   body('name')
@@ -523,12 +528,11 @@ router.get('/bestand', async (_req: Request, res: Response) => {
 
     const bestandMitSorten = aktiveSorten.map(sorte => {
       const b = data.bestand.find(b => b.sorteId === sorte.id) || { sorteId: sorte.id, lager: 0 };
-      const gesamtKaesten = b.lager / sorte.flaschenProKasten;
       return {
         ...b,
         sorte,
         gesamt: b.lager,
-        unterWarnschwelle: gesamtKaesten < sorte.warnschwelle,
+        unterWarnschwelle: unterWarnschwelle(sorte, b.lager),
       };
     });
 
@@ -610,15 +614,14 @@ router.post('/buchen', [...buchungValidation, handleValidation], async (req: Req
       }
       const bestand = data.bestand[bestandIdx];
 
-      let buchungsMenge = menge;
-
       if (typ === 'eingang') {
         bestand.lager += menge * sorte.flaschenProKasten;
         // Aktuellen Einkaufspreis auf der Sorte mitführen (für Anzeige/Empfehlung).
         if (hasEinkaufspreis) {
           sorte.einkaufspreis = einkaufspreis as number;
         }
-      } else if (typ === 'ausgang') {
+      } else {
+        // ausgang und schwund gehen beide aus dem Lager ab.
         const flaschenMenge = menge * sorte.flaschenProKasten;
         if (bestand.lager < flaschenMenge) {
           throw Object.assign(new Error(`Nicht genug Bestand im Lager (${bestand.lager} Flaschen vorhanden)`), { status: 400 });
@@ -633,11 +636,14 @@ router.post('/buchen', [...buchungValidation, handleValidation], async (req: Req
         sorteId,
         datum: new Date().toISOString(),
         typ,
-        menge: buchungsMenge,
+        menge,
         standort,
         notiz: notiz?.trim() || null,
-        // Einkaufspreis nur bei Eingang mitspeichern (historisch korrekte Kosten).
+        // Preise auf der Buchung festhalten, damit spätere Preisänderungen die
+        // Vergangenheit nicht mehr verschieben.
         ...(typ === 'eingang' && hasEinkaufspreis ? { einkaufspreis: einkaufspreis as number } : {}),
+        ...(typ !== 'eingang' ? { verkaufspreis: sorte.verkaufspreis ?? 0 } : {}),
+        ...(benutzerVon(req) ? { benutzer: benutzerVon(req) as string } : {}),
       };
       data.buchungen.push(buchung);
 
@@ -653,6 +659,149 @@ router.post('/buchen', [...buchungValidation, handleValidation], async (req: Req
     }
     console.error('Fehler beim Buchen:', err);
     res.status(500).json({ error: 'Serverfehler beim Buchen' });
+  }
+});
+
+/**
+ * POST /buchungen/:id/stornieren
+ *
+ * Dreht die Bestandswirkung zurück und markiert die Buchung. Gelöscht wird
+ * nichts – eine Kassenprüfung soll sehen können, dass hier korrigiert wurde.
+ */
+router.post('/buchungen/:id/stornieren', [param('id').isInt(), handleValidation], async (req: Request, res: Response) => {
+  try {
+    const ergebnis = await withFileLock(DATA_PATH, async () => {
+      const data = await loadData();
+      const id = parseInt(req.params.id);
+      const buchung = data.buchungen.find(b => b.id === id);
+
+      if (!buchung) {
+        throw Object.assign(new Error('Buchung nicht gefunden'), { status: 404 });
+      }
+      if (buchung.storniert) {
+        throw Object.assign(new Error('Diese Buchung ist bereits storniert.'), { status: 400 });
+      }
+
+      const sorte = data.sorten.find(s => s.id === buchung.sorteId);
+      if (!sorte) {
+        throw Object.assign(new Error('Die Sorte zu dieser Buchung gibt es nicht mehr.'), { status: 400 });
+      }
+
+      let bestandIdx = data.bestand.findIndex(b => b.sorteId === buchung.sorteId);
+      if (bestandIdx === -1) {
+        data.bestand.push({ sorteId: buchung.sorteId, lager: 0 });
+        bestandIdx = data.bestand.length - 1;
+      }
+
+      // Rückwärts: die Wirkung der Buchung mit umgekehrtem Vorzeichen anwenden.
+      const rueckgaengig = -bestandsAenderung(buchung, sorte);
+      const neuerStand = data.bestand[bestandIdx].lager + rueckgaengig;
+
+      if (neuerStand < 0) {
+        throw Object.assign(
+          new Error(
+            `Storno nicht möglich: der Lagerbestand würde auf ${neuerStand} Flaschen fallen. ` +
+            'Die Ware ist zwischenzeitlich ausgebucht worden – bitte stattdessen den Bestand korrigieren.',
+          ),
+          { status: 400 },
+        );
+      }
+
+      data.bestand[bestandIdx].lager = neuerStand;
+      buchung.storniert = true;
+      buchung.storniertAm = new Date().toISOString();
+      const wer = benutzerVon(req);
+      if (wer) buchung.storniertVon = wer;
+
+      await saveData(data);
+      return { buchung, bestand: data.bestand[bestandIdx] };
+    });
+
+    res.json(ergebnis);
+  } catch (err: unknown) {
+    const error = err as { status?: number; message?: string };
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error('Fehler beim Stornieren:', err);
+    res.status(500).json({ error: 'Serverfehler beim Stornieren' });
+  }
+});
+
+/**
+ * POST /inventur
+ *
+ * Gezählte Flaschen je Sorte übernehmen. Jede Abweichung wird als eigene
+ * Buchung festgehalten, statt den Bestand stillschweigend zu überschreiben –
+ * so bleibt am Jahresende nachvollziehbar, wo etwas gefehlt hat.
+ */
+router.post('/inventur', [
+  body('zaehlung').isArray({ min: 1 }).withMessage('Keine Zählung übergeben'),
+  body('zaehlung.*.sorteId').isInt({ min: 1 }).withMessage('Ungültige Sorte'),
+  body('zaehlung.*.flaschen').isInt({ min: 0, max: 100000 }).withMessage('Flaschen müssen 0 oder mehr sein'),
+  body('notiz').optional({ values: 'null' }).trim().isLength({ max: 500 }),
+  handleValidation,
+], async (req: Request, res: Response) => {
+  try {
+    const ergebnis = await withFileLock(DATA_PATH, async () => {
+      const data = await loadData();
+      const zaehlung = req.body.zaehlung as { sorteId: number; flaschen: number }[];
+      const notiz = (req.body.notiz as string | undefined)?.trim() || null;
+      const wer = benutzerVon(req);
+      const jetzt = new Date().toISOString();
+
+      const abweichungen: { sorteId: number; sorteName: string; vorher: number; gezaehlt: number; differenz: number }[] = [];
+
+      for (const zeile of zaehlung) {
+        const sorte = data.sorten.find(s => s.id === zeile.sorteId && s.aktiv);
+        if (!sorte) continue;
+
+        let idx = data.bestand.findIndex(b => b.sorteId === sorte.id);
+        if (idx === -1) {
+          data.bestand.push({ sorteId: sorte.id, lager: 0 });
+          idx = data.bestand.length - 1;
+        }
+
+        const vorher = data.bestand[idx].lager;
+        const differenz = zeile.flaschen - vorher;
+        if (differenz === 0) continue;
+
+        data.bestand[idx].lager = zeile.flaschen;
+        data.buchungen.push({
+          id: nextId(data.buchungen),
+          sorteId: sorte.id,
+          datum: jetzt,
+          typ: 'inventur',
+          // Bei der Inventur steht in menge die Differenz in Flaschen,
+          // negativ heisst: es fehlte etwas.
+          menge: differenz,
+          standort: 'lager',
+          notiz,
+          verkaufspreis: sorte.verkaufspreis ?? 0,
+          ...(wer ? { benutzer: wer } : {}),
+        });
+
+        abweichungen.push({
+          sorteId: sorte.id,
+          sorteName: sorte.name,
+          vorher,
+          gezaehlt: zeile.flaschen,
+          differenz,
+        });
+      }
+
+      if (abweichungen.length > 0) await saveData(data);
+      return { abweichungen, gezaehlteSorten: zaehlung.length };
+    });
+
+    res.json(ergebnis);
+  } catch (err: unknown) {
+    const error = err as { status?: number; message?: string };
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error('Fehler bei der Inventur:', err);
+    res.status(500).json({ error: 'Serverfehler bei der Inventur' });
   }
 });
 
@@ -696,14 +845,10 @@ router.get('/einkaufsliste', async (_req: Request, res: Response) => {
     const liste = aktiveSorten
       .map(sorte => {
         const b = data.bestand.find(b => b.sorteId === sorte.id) || { sorteId: sorte.id, lager: 0 };
-        const gesamtKaesten = b.lager / sorte.flaschenProKasten;
-        // ?? statt ||: Soll-Bestand 0 heisst „nie nachbestellen", nicht „nimm 4".
-        const sollBestand = sorte.sollBestand ?? SORTE_VORGABEN.sollBestand;
-        const empfohleneBestellung = Math.max(0, Math.ceil(sollBestand - gesamtKaesten));
         return {
           sorte,
-          aktuellerBestand: gesamtKaesten,
-          empfohleneBestellung,
+          aktuellerBestand: b.lager / sorte.flaschenProKasten,
+          empfohleneBestellung: empfohleneBestellung(sorte, b.lager),
         };
       })
       .filter(e => e.empfohleneBestellung > 0);
@@ -837,32 +982,14 @@ router.get('/statistik', async (_req: Request, res: Response) => {
   try {
     const data = await loadData();
 
-    const monatMap: Record<string, { eingang: number; ausgang: number }> = {};
-    const proSorte: Record<string, Record<string, { eingang: number; ausgang: number }>> = {};
+    const gesamt = verbrauchProMonat(data.buchungen);
 
-    for (const b of data.buchungen) {
-      const monat = b.datum.substring(0, 7); // YYYY-MM
-      if (!monatMap[monat]) monatMap[monat] = { eingang: 0, ausgang: 0 };
-
-      if (b.typ === 'eingang') monatMap[monat].eingang += b.menge;
-      else if (b.typ === 'ausgang') monatMap[monat].ausgang += b.menge;
-
-      const sorteName = data.sorten.find(s => s.id === b.sorteId)?.name || 'Unbekannt';
-      if (!proSorte[sorteName]) proSorte[sorteName] = {};
-      if (!proSorte[sorteName][monat]) proSorte[sorteName][monat] = { eingang: 0, ausgang: 0 };
-      if (b.typ === 'eingang') proSorte[sorteName][monat].eingang += b.menge;
-      else if (b.typ === 'ausgang') proSorte[sorteName][monat].ausgang += b.menge;
-    }
-
-    const gesamt = Object.entries(monatMap)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([monat, vals]) => ({ monat, ...vals }));
-
-    const proSorteResult: Record<string, { monat: string; eingang: number; ausgang: number }[]> = {};
-    for (const [name, monate] of Object.entries(proSorte)) {
-      proSorteResult[name] = Object.entries(monate)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([monat, vals]) => ({ monat, ...vals }));
+    // Dieselbe Rechnung noch einmal je Sorte, damit sich einzelne Getränke
+    // vergleichen lassen.
+    const proSorteResult: Record<string, ReturnType<typeof verbrauchProMonat>> = {};
+    for (const sorte of data.sorten) {
+      const eigene = data.buchungen.filter(b => b.sorteId === sorte.id);
+      if (eigene.length > 0) proSorteResult[sorte.name] = verbrauchProMonat(eigene);
     }
 
     res.json({ gesamt, proSorte: proSorteResult });
@@ -881,45 +1008,7 @@ router.get('/kassenbericht', async (_req: Request, res: Response) => {
   try {
     const data = await loadData();
 
-    const monatMap: Record<string, { einnahmen: number; ausgaben: number }> = {};
-
-    for (const b of data.buchungen) {
-      const monat = b.datum.substring(0, 7);
-      const sorte = data.sorten.find(s => s.id === b.sorteId);
-      if (!sorte) continue;
-
-      if (!monatMap[monat]) monatMap[monat] = { einnahmen: 0, ausgaben: 0 };
-
-      if (b.typ === 'eingang') {
-        // Einkauf: Kosten = Menge * Einkaufspreis pro Kasten.
-        // Bevorzugt den zum Eingang gespeicherten Preis (schwankende Preise),
-        // Fallback auf den aktuellen Sorten-Preis für Alt-Buchungen.
-        const preis = b.einkaufspreis ?? sorte.einkaufspreis ?? 0;
-        monatMap[monat].ausgaben += b.menge * preis;
-      } else if (b.typ === 'ausgang') {
-        // Verkauf: Einnahmen = Menge * Flaschen pro Kasten * Verkaufspreis pro Flasche
-        monatMap[monat].einnahmen += b.menge * sorte.flaschenProKasten * (sorte.verkaufspreis || 0);
-      }
-    }
-
-    const monate = Object.entries(monatMap)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([monat, vals]) => ({
-        monat,
-        einnahmen: Math.round(vals.einnahmen * 100) / 100,
-        ausgaben: Math.round(vals.ausgaben * 100) / 100,
-        gewinn: Math.round((vals.einnahmen - vals.ausgaben) * 100) / 100,
-      }));
-
-    const gesamtEinnahmen = Math.round(monate.reduce((s, m) => s + m.einnahmen, 0) * 100) / 100;
-    const gesamtAusgaben = Math.round(monate.reduce((s, m) => s + m.ausgaben, 0) * 100) / 100;
-
-    res.json({
-      monate,
-      gesamtEinnahmen,
-      gesamtAusgaben,
-      gesamtGewinn: Math.round((gesamtEinnahmen - gesamtAusgaben) * 100) / 100,
-    });
+    res.json(berechneKassenbericht(data.buchungen, data.sorten));
   } catch (err) {
     console.error('Fehler beim Laden des Kassenberichts:', err);
     res.status(500).json({ error: 'Serverfehler beim Laden des Kassenberichts' });

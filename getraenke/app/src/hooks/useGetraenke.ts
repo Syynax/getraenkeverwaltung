@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Sorte, BestandMitSorte, Buchung, SorteFormData, BuchungFormData, BesonderesEvent, BesonderesEventFormData, EinkaufslistenEintrag, VerbrauchsStatistik, Kassenbericht } from '../types/getraenke';
+import type { Sorte, BestandMitSorte, Buchung, SorteFormData, BuchungFormData, BesonderesEvent, BesonderesEventFormData, EinkaufslistenEintrag, VerbrauchsStatistik, Kassenbericht, InventurZeile, InventurErgebnis } from '../types/getraenke';
 import {
   getSorten,
   createSorte as apiCreateSorte,
@@ -16,6 +16,8 @@ import {
   deleteEvent as apiDeleteEvent,
   getVerbrauchsstatistik,
   getKassenbericht,
+  storniereBuchung,
+  bucheInventur,
 } from '../services/api';
 
 export interface EinkaufBuchung {
@@ -40,6 +42,8 @@ interface UseGetraenkeReturn {
   deleteSorte: (id: number) => Promise<void>;
   setBestand: (sorteId: number, lager: number) => Promise<void>;
   buchen: (data: BuchungFormData) => Promise<void>;
+  stornieren: (id: number) => Promise<void>;
+  inventur: (zaehlung: InventurZeile[], notiz?: string) => Promise<InventurErgebnis>;
   verbucheEinkauf: (items: EinkaufBuchung[]) => Promise<void>;
   createEvent: (data: BesonderesEventFormData) => Promise<void>;
   updateEvent: (id: number, data: BesonderesEventFormData) => Promise<void>;
@@ -130,6 +134,18 @@ export const useGetraenke = (): UseGetraenkeReturn => {
     await fetchAll(undefined, true);
   }, [fetchAll]);
 
+  const stornieren = useCallback(async (id: number) => {
+    await storniereBuchung(id);
+    // Storno berührt Bestand, Verlauf und Kasse – alles frisch holen.
+    await fetchAll(undefined, true);
+  }, [fetchAll]);
+
+  const inventur = useCallback(async (zaehlung: InventurZeile[], notiz?: string) => {
+    const ergebnis = await bucheInventur(zaehlung, notiz);
+    await fetchAll(undefined, true);
+    return ergebnis;
+  }, [fetchAll]);
+
   // Mehrere Lager-Eingänge auf einmal verbuchen (Einkauf), je mit eigenem
   // Einkaufspreis. Danach nur ein stiller Refetch.
   const verbucheEinkauf = useCallback(async (items: EinkaufBuchung[]) => {
@@ -178,6 +194,8 @@ export const useGetraenke = (): UseGetraenkeReturn => {
     deleteSorte,
     setBestand,
     buchen,
+    stornieren,
+    inventur,
     verbucheEinkauf,
     createEvent,
     updateEvent,

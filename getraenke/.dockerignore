@@ -2,6 +2,8 @@
 # überschreiben sie die im Container installierten Abhängigkeiten.
 **/node_modules
 **/dist
+**/dist-test
+**/*.test.ts
 **/.tmp
 **/*.tsbuildinfo
 **/data

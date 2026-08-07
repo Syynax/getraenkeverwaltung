@@ -20,7 +20,9 @@ Rest der Statistik läuft.
 Dazu:
 
 - **Eigene Anmeldung** – Konten werden im Add-on-Store gepflegt, nicht in Dateien
-- **Daten bleiben lokal** unter `/data/getraenke.json`, Sichern und Import als JSON
+- **Daten bleiben lokal** unter `/data/getraenke.json` und überstehen Stopp,
+  Neustart und Update. Täglich eine automatische Sicherung, dazu Sichern und
+  Import als JSON
 - **Kein Internet nötig** – bis auf den abschaltbaren Produkt-Lookup läuft alles offline,
   Font Awesome ist mitgebaut
 
@@ -55,6 +57,8 @@ benutzer:
   - name: cedric
     passwort: EinLangesPasswort
 produkt_lookup: true
+automatische_sicherung: true
+sicherungen_behalten: 14
 log_level: info
 ```
 
@@ -103,6 +107,16 @@ gelten die Defaults, also unter anderem Anmeldung aus:
 cd getraenke/server && OPTIONS_FILE=../../options.local.json DATA_FILE=../../data/getraenke.json PUBLIC_DIR=../app/dist npm start
 ```
 
+Tests laufen ohne zusätzliche Abhängigkeit über den eingebauten Node-Runner:
+
+```bash
+cd getraenke/server && npm test
+```
+
+Abgedeckt sind die Rechenregeln (`src/domain/berechnung.ts`), die
+Automaten-Migration, der Sortenvorschlag aus dem Produkt-Lookup und die
+Dateiablage samt Sperre und Defekterkennung.
+
 Für Frontend-Entwicklung mit Hot-Reload zusätzlich im Ordner `getraenke/app`:
 
 ```bash
@@ -124,4 +138,4 @@ in einem Cookie – der Ingress-Pfad wechselt, ein Cookie-Path liefe ins Leere.
 
 ## Änderungen
 
-Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.4.0**.
+Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.5.0**.

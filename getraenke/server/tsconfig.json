@@ -13,5 +13,7 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  // Tests gehören nicht ins Add-on-Image – sie werden über tsconfig.test.json
+  // nach dist-test gebaut und dort ausgeführt.
+  "exclude": ["node_modules", "dist", "dist-test", "src/**/*.test.ts"]
 }

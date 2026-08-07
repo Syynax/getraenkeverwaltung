@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.5.0
+
+### Die Daten sind sicherer
+
+- **Eine beschädigte Datei führt nicht mehr zu Datenverlust.** Bisher lief das
+  Add-on in so einem Fall mit leerem Bestand weiter – die erste Buchung hätte
+  alles überschrieben. Jetzt startet es bewusst nicht, schreibt nichts und sagt
+  im Protokoll, wo die Sicherungen liegen
+- **Tägliche Sicherung** in `/data/sicherungen`, standardmässig 14 Stück.
+  Neue Optionen `automatische_sicherung` und `sicherungen_behalten`
+- Die alten Import-Sicherungen neben der Datendatei werden mit aufgeräumt,
+  statt unbegrenzt zu wachsen
+- **Schreibvorgänge werden auf die Platte durchgereicht** (`fsync`), damit ein
+  Stromausfall nichts frisst, was schon bestätigt war
+- **Sauberes Herunterfahren:** Auf das Stoppsignal von Home Assistant werden
+  laufende Buchungen zu Ende gebracht, bevor sich das Add-on beendet
+- Reste eines abgebrochenen Schreibvorgangs werden beim Start entfernt
+- Beim Start steht im Protokoll, wie viele Sorten, Bestände und Buchungen
+  geladen wurden
+
+### Kassenbericht wird belastbar
+
+- **Der Verkaufspreis wird jetzt historisch geführt.** Bisher rechnete der
+  Kassenbericht immer mit dem heutigen Preis – eine Preiserhöhung veränderte
+  rückwirkend die Einnahmen aller vergangenen Monate. Ab jetzt gilt der Preis,
+  der bei der Buchung galt. Beim Einkaufspreis war das schon so
+- **Neue Buchungsart Schwund / Bruch:** Ware verlässt das Lager ohne Einnahme.
+  Der Kassenbericht weist den entgangenen Wert als eigene Kachel aus, ohne ihn
+  in den Gewinn zu rechnen
+- **Buchungen lassen sich stornieren.** Der Bestand wird zurückgedreht, die
+  Buchung bleibt durchgestrichen im Verlauf stehen und zählt nirgends mehr mit.
+  Würde der Bestand dadurch negativ, wird der Storno mit Begründung abgelehnt
+- **Inventur:** Gezählte Flaschen je Sorte eintragen; jede Abweichung wird als
+  eigene Buchung festgehalten statt den Bestand stillschweigend zu überschreiben
+- Bei jeder Buchung steht, **wer** sie gemacht hat – sofern eine Anmeldung aktiv ist
+
+### Unterbau
+
+- Die Rechenregeln liegen jetzt als reine Funktionen in `domain/berechnung.ts`
+  und sind mit **47 Tests** abgedeckt (`npm test`, ohne zusätzliche Abhängigkeit)
+- Getestet werden Bestellempfehlung, Verbrauch, Kassenbericht, Bestandswirkung,
+  die Automaten-Migration, der Sortenvorschlag und die Dateiablage samt Sperre
+
 ## 1.4.0
 
 ### Sorte anlegen

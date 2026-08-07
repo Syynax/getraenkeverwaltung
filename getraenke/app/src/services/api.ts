@@ -18,6 +18,8 @@ import type {
   GetraenkeExport,
   AppConfig,
   AuthStatus,
+  InventurZeile,
+  InventurErgebnis,
 } from '../types/getraenke';
 
 /**
@@ -136,6 +138,17 @@ export const getBuchungen = async (sorteId?: number, limit?: number, signal?: Ab
   if (sorteId) params.sorteId = sorteId;
   if (limit) params.limit = limit;
   const response = await api.get<(Buchung & { sorteName: string })[]>('/getraenke/buchungen', { params, signal });
+  return response.data;
+};
+
+export const storniereBuchung = async (id: number): Promise<void> => {
+  await api.post(`/getraenke/buchungen/${id}/stornieren`);
+};
+
+// --- Inventur ---
+
+export const bucheInventur = async (zaehlung: InventurZeile[], notiz?: string): Promise<InventurErgebnis> => {
+  const response = await api.post<InventurErgebnis>('/getraenke/inventur', { zaehlung, notiz: notiz ?? null });
   return response.data;
 };
 
