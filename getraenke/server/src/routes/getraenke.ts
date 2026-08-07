@@ -113,6 +113,25 @@ function normalizeEventItems(items: unknown[], sorten: Sorte[]): EventPosition[]
 
 // --- Validation rules ---
 
+/**
+ * Pflicht sind nur Name, Kategorie und Gebindegrösse – alles, was man beim
+ * Aufnehmen einer neuen Sorte am Regal wirklich weiss. Der Rest bekommt
+ * brauchbare Vorgaben; der Einkaufspreis trägt sich beim ersten Eingang
+ * ohnehin selbst nach.
+ */
+const zahlOder = (wert: unknown, vorgabe: number): number => {
+  if (wert === undefined || wert === null || wert === '') return vorgabe;
+  const zahl = Number(wert);
+  return Number.isFinite(zahl) ? zahl : vorgabe;
+};
+
+export const SORTE_VORGABEN = {
+  warnschwelle: 2,
+  sollBestand: 4,
+  einkaufspreis: 0,
+  verkaufspreis: 0,
+} as const;
+
 const sorteValidation = [
   body('name')
     .trim()
@@ -125,12 +144,16 @@ const sorteValidation = [
   body('flaschenProKasten')
     .isInt({ min: 1, max: 100 }).withMessage('Flaschen pro Kasten muss 1-100 sein'),
   body('warnschwelle')
+    .optional({ values: 'falsy' })
     .isInt({ min: 0, max: 100 }).withMessage('Warnschwelle muss 0-100 sein'),
   body('einkaufspreis')
+    .optional({ values: 'falsy' })
     .isFloat({ min: 0, max: 10000 }).withMessage('Einkaufspreis muss 0-10000 sein'),
   body('verkaufspreis')
+    .optional({ values: 'falsy' })
     .isFloat({ min: 0, max: 1000 }).withMessage('Verkaufspreis muss 0-1000 sein'),
   body('sollBestand')
+    .optional({ values: 'falsy' })
     .isInt({ min: 0, max: 100 }).withMessage('Soll-Bestand muss 0-100 sein'),
   body('barcodes')
     .optional().isArray({ max: 20 }).withMessage('Max 20 Barcodes'),
@@ -252,10 +275,10 @@ router.post('/sorten', [...sorteValidation, handleValidation], async (req: Reque
         name: req.body.name.trim(),
         kategorie: req.body.kategorie,
         flaschenProKasten: req.body.flaschenProKasten,
-        warnschwelle: req.body.warnschwelle,
-        einkaufspreis: req.body.einkaufspreis,
-        verkaufspreis: req.body.verkaufspreis,
-        sollBestand: req.body.sollBestand,
+        warnschwelle: zahlOder(req.body.warnschwelle, SORTE_VORGABEN.warnschwelle),
+        einkaufspreis: zahlOder(req.body.einkaufspreis, SORTE_VORGABEN.einkaufspreis),
+        verkaufspreis: zahlOder(req.body.verkaufspreis, SORTE_VORGABEN.verkaufspreis),
+        sollBestand: zahlOder(req.body.sollBestand, SORTE_VORGABEN.sollBestand),
         barcodes: normalizeBarcodes(req.body.barcodes),
         aktiv: true,
         createdAt: new Date().toISOString(),
@@ -287,15 +310,18 @@ router.put('/sorten/:id', [param('id').isInt(), ...sorteValidation, handleValida
         throw Object.assign(new Error('Sorte nicht gefunden'), { status: 404 });
       }
 
+      // Beim Bearbeiten zählt der bisherige Wert als Vorgabe – ein fehlendes
+      // Feld darf keinen gepflegten Preis auf 0 zurücksetzen.
+      const bisher = data.sorten[idx];
       data.sorten[idx] = {
-        ...data.sorten[idx],
+        ...bisher,
         name: req.body.name.trim(),
         kategorie: req.body.kategorie,
         flaschenProKasten: req.body.flaschenProKasten,
-        warnschwelle: req.body.warnschwelle,
-        einkaufspreis: req.body.einkaufspreis,
-        verkaufspreis: req.body.verkaufspreis,
-        sollBestand: req.body.sollBestand,
+        warnschwelle: zahlOder(req.body.warnschwelle, bisher.warnschwelle),
+        einkaufspreis: zahlOder(req.body.einkaufspreis, bisher.einkaufspreis),
+        verkaufspreis: zahlOder(req.body.verkaufspreis, bisher.verkaufspreis),
+        sollBestand: zahlOder(req.body.sollBestand, bisher.sollBestand),
         barcodes: normalizeBarcodes(req.body.barcodes),
         createdAt: data.sorten[idx].createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -671,7 +697,8 @@ router.get('/einkaufsliste', async (_req: Request, res: Response) => {
       .map(sorte => {
         const b = data.bestand.find(b => b.sorteId === sorte.id) || { sorteId: sorte.id, lager: 0 };
         const gesamtKaesten = b.lager / sorte.flaschenProKasten;
-        const sollBestand = sorte.sollBestand || 4;
+        // ?? statt ||: Soll-Bestand 0 heisst „nie nachbestellen", nicht „nimm 4".
+        const sollBestand = sorte.sollBestand ?? SORTE_VORGABEN.sollBestand;
         const empfohleneBestellung = Math.max(0, Math.ceil(sollBestand - gesamtKaesten));
         return {
           sorte,

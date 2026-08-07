@@ -4,3 +4,5 @@ dist/
 *.log
 .tmp/
 data/
+# Lokale Add-on-Optionen zum Entwickeln – enthalten Passwörter im Klartext.
+options.local.json

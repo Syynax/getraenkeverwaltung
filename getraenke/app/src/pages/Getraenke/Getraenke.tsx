@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useGetraenke } from '../../hooks/useGetraenke';
 import { useScanKopplung } from '../../hooks/useScanKopplung';
 import { EVENT_STATI, EVENT_POSITION_TYPEN } from '../../constants/getraenke';
@@ -26,6 +26,89 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend)
  * abarbeitet, oder ein stilles Verwerfen älterer Einträge.
  */
 const MAX_OFFENE_CODES = 20;
+
+/** Übliche Gebindegrössen – deckt das meiste ab, daneben bleibt das freie Feld. */
+const GEBINDE: { wert: number; label: string }[] = [
+  { wert: 20, label: '20er' },
+  { wert: 24, label: '24er' },
+  { wert: 12, label: '12er' },
+  { wert: 11, label: '11er' },
+  { wert: 6, label: '6er' },
+];
+
+/**
+ * Vorgaben des Servers, gespiegelt für die Platzhalter im Formular.
+ * Leer gelassene Felder werden dort eingesetzt.
+ */
+const SORTE_VORGABEN = { warnschwelle: 2, sollBestand: 4 } as const;
+
+/** Leeres Feld bleibt leer, statt zu 0 zu werden – sonst kann man nichts offenlassen. */
+const zahlOderLeer = (roh: string, komma = false): number | '' => {
+  if (roh.trim() === '') return '';
+  const zahl = komma ? parseFloat(roh) : parseInt(roh, 10);
+  return Number.isFinite(zahl) ? Math.max(0, zahl) : '';
+};
+
+type EinkaufDraft = Record<number, { menge: number; preis: number }>;
+
+/**
+ * Einkaufsentwurf über einen Reload retten. sessionStorage statt localStorage:
+ * Ein Einkauf gehört zu dieser Sitzung – ein Tab, der Wochen später aufgeht,
+ * soll nicht mit einer alten Bestellung starten.
+ */
+const EINKAUF_SCHLUESSEL = 'getraenke.einkaufDraft';
+
+const ladeEinkaufDraft = (): EinkaufDraft => {
+  try {
+    const roh = sessionStorage.getItem(EINKAUF_SCHLUESSEL);
+    if (!roh) return {};
+    const wert = JSON.parse(roh) as unknown;
+    if (!wert || typeof wert !== 'object' || Array.isArray(wert)) return {};
+
+    const sauber: EinkaufDraft = {};
+    for (const [id, zeile] of Object.entries(wert as Record<string, unknown>)) {
+      const sorteId = Number(id);
+      const z = zeile as { menge?: unknown; preis?: unknown };
+      if (!Number.isFinite(sorteId) || typeof z?.menge !== 'number' || typeof z?.preis !== 'number') continue;
+      sauber[sorteId] = { menge: Math.max(0, z.menge), preis: Math.max(0, z.preis) };
+    }
+    return sauber;
+  } catch {
+    return {};
+  }
+};
+
+const merkeEinkaufDraft = (draft: EinkaufDraft): void => {
+  try {
+    if (Object.keys(draft).length === 0) sessionStorage.removeItem(EINKAUF_SCHLUESSEL);
+    else sessionStorage.setItem(EINKAUF_SCHLUESSEL, JSON.stringify(draft));
+  } catch {
+    /* privater Modus o.ä. – dann gilt der Entwurf nur, solange die Seite offen ist */
+  }
+};
+
+const leereSorte = (): SorteFormData => ({
+  name: '',
+  kategorie: 'alkoholfrei',
+  flaschenProKasten: 20,
+  warnschwelle: '',
+  einkaufspreis: '',
+  verkaufspreis: '',
+  sollBestand: '',
+  barcodes: [],
+});
+
+/**
+ * Open Food Facts liefert die Menge als Freitext („0,5 l", „20 x 0.5 l"). Steht
+ * dort eine Stückzahl, ist das die Gebindegrösse – sonst bleibt es beim Default.
+ */
+const gebindeAusMenge = (menge: string | null | undefined): number | null => {
+  if (!menge) return null;
+  const treffer = menge.match(/(\d{1,3})\s*[x×]/i);
+  if (!treffer) return null;
+  const zahl = parseInt(treffer[1], 10);
+  return zahl >= 1 && zahl <= 100 ? zahl : null;
+};
 
 type ModalType = 'none' | 'neueSorte' | 'buchung' | 'bestandKorrektur' | 'event';
 type SubTab = 'bestand' | 'einkauf' | 'scan' | 'events' | 'auswertung';
@@ -128,10 +211,10 @@ export const Getraenke: React.FC = () => {
     name: '',
     kategorie: 'alkoholfrei',
     flaschenProKasten: 20,
-    warnschwelle: 2,
-    einkaufspreis: 0,
-    verkaufspreis: 0,
-    sollBestand: 4,
+    warnschwelle: '',
+    einkaufspreis: '',
+    verkaufspreis: '',
+    sollBestand: '',
     barcodes: [],
   });
   const [editSorteId, setEditSorteId] = useState<number | null>(null);
@@ -155,7 +238,12 @@ export const Getraenke: React.FC = () => {
   const [editEventId, setEditEventId] = useState<number | null>(null);
 
   // Einkauf-Tab: pro Sorte erfasste Menge (Kästen) + Preis (€/Kasten).
-  const [einkaufDraft, setEinkaufDraft] = useState<Record<number, { menge: number; preis: number }>>({});
+  // Liegt in der sessionStorage, damit ein Reload im Getränkemarkt nicht die
+  // halbe Bestellung kostet.
+  const [einkaufDraft, setEinkaufDraft] = useState<EinkaufDraft>(ladeEinkaufDraft);
+  const [nurNachbestellen, setNurNachbestellen] = useState(true);
+
+  useEffect(() => { merkeEinkaufDraft(einkaufDraft); }, [einkaufDraft]);
 
   // Scan-Tab
   const [scanFeedback, setScanFeedback] = useState<ScanFeedback | null>(null);
@@ -176,8 +264,21 @@ export const Getraenke: React.FC = () => {
     aendereOffene(bisher => bisher.filter(o => o.code !== code));
   };
 
+  // Wird das Sorten-Formular aus einem Scan heraus geöffnet, verschwindet der
+  // offene Code erst, wenn die Sorte wirklich angelegt ist.
+  const [neueSorteAusCode, setNeueSorteAusCode] = useState<string | null>(null);
+
   // Einkaufsliste ref for export
   const einkaufslisteRef = useRef<HTMLDivElement>(null);
+
+  // Warnt vor einer zweiten „Cola", blockiert aber nichts – Sorten dürfen
+  // absichtlich ähnlich heissen (0,33 l vs 0,5 l).
+  const namensDublette = useMemo(() => {
+    if (editSorteId !== null) return null;
+    const gesucht = sorteForm.name.trim().toLowerCase();
+    if (gesucht.length < 3) return null;
+    return sorten.find(s => s.name.trim().toLowerCase() === gesucht)?.name ?? null;
+  }, [sorteForm.name, sorten, editSorteId]);
 
   // Computed data
   const stats = useMemo(() => {
@@ -208,9 +309,31 @@ export const Getraenke: React.FC = () => {
   // --- Handlers ---
 
   const openNeueSorte = () => {
-    setSorteForm({ name: '', kategorie: 'alkoholfrei', flaschenProKasten: 20, warnschwelle: 2, einkaufspreis: 0, verkaufspreis: 0, sollBestand: 4, barcodes: [] });
+    setSorteForm(leereSorte());
     setEditSorteId(null);
     setActionError(null);
+    setModal('neueSorte');
+  };
+
+  /**
+   * Sorte aus einem gescannten Barcode anlegen. Name und Gebinde kommen – soweit
+   * vorhanden – aus dem Produkt-Lookup, der Code ist schon hinterlegt. Damit
+   * bleiben im Formular oft nur noch Bestätigen und Speichern.
+   */
+  const openSorteAusScan = (offen: OffenerCode) => {
+    const produkt = offen.produkt;
+    const name = produkt
+      ? [produkt.marke, produkt.name].filter(Boolean).join(' ').trim() || produkt.name
+      : '';
+    setSorteForm({
+      ...leereSorte(),
+      name,
+      flaschenProKasten: gebindeAusMenge(produkt?.menge) ?? 20,
+      barcodes: [offen.code],
+    });
+    setEditSorteId(null);
+    setActionError(null);
+    setNeueSorteAusCode(offen.code);
     setModal('neueSorte');
   };
 
@@ -342,7 +465,12 @@ export const Getraenke: React.FC = () => {
         await updateSorte(editSorteId, sorteForm);
       } else {
         await createSorte(sorteForm);
+        if (neueSorteAusCode) {
+          verwirfOffenen(neueSorteAusCode);
+          setScanFeedback({ type: 'ok', message: `Sorte „${sorteForm.name.trim()}" angelegt, Barcode ist hinterlegt.` });
+        }
       }
+      setNeueSorteAusCode(null);
       setModal('none');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Fehler beim Speichern');
@@ -463,6 +591,14 @@ export const Getraenke: React.FC = () => {
   const setEinkaufRow = (b: BestandMitSorte, patch: Partial<{ menge: number; preis: number }>) => {
     setEinkaufDraft(prev => ({ ...prev, [b.sorte.id]: { ...getEinkaufRow(b), ...patch } }));
   };
+
+  // Standardmässig nur zeigen, was wirklich ansteht – plus alles, wo schon eine
+  // Menge drinsteht, sonst würde eine erfasste Zeile beim Filtern verschwinden.
+  const einkaufOffen = useMemo(() => bestand.filter(b =>
+    (einkaufEmpfMap.get(b.sorte.id) ?? 0) > 0 || (einkaufDraft[b.sorte.id]?.menge ?? 0) > 0,
+  ), [bestand, einkaufEmpfMap, einkaufDraft]);
+
+  const einkaufSichtbar = nurNachbestellen ? einkaufOffen : bestand;
 
   const einkaufSumme = useMemo(() =>
     bestand.reduce((sum, b) => {
@@ -993,8 +1129,34 @@ export const Getraenke: React.FC = () => {
           </div>
         ) : (
           <>
+            <div className={styles.einkaufLeiste}>
+              <div className={styles.einkaufFilter}>
+                <button
+                  className={`${styles.einkaufFilterBtn} ${nurNachbestellen ? styles.einkaufFilterAktiv : ''}`}
+                  onClick={() => setNurNachbestellen(true)}
+                >
+                  Nur nachbestellen ({einkaufOffen.length})
+                </button>
+                <button
+                  className={`${styles.einkaufFilterBtn} ${!nurNachbestellen ? styles.einkaufFilterAktiv : ''}`}
+                  onClick={() => setNurNachbestellen(false)}
+                >
+                  Alle Sorten ({bestand.length})
+                </button>
+              </div>
+              <button className={styles.einkaufLeer} onClick={() => setEinkaufDraft({})} disabled={actionLoading}>
+                <i className="fas fa-eraser"></i> Mengen zurücksetzen
+              </button>
+            </div>
+
+            {einkaufSichtbar.length === 0 ? (
+              <div className={styles.emptyState}>
+                <i className="fas fa-check"></i>
+                <p>Nichts nachzubestellen. Über <strong>Alle Sorten</strong> kommst du trotzdem an jede Sorte.</p>
+              </div>
+            ) : (
             <div className={styles.sorteGrid}>
-              {bestand.map(b => {
+              {einkaufSichtbar.map(b => {
                 const row = getEinkaufRow(b);
                 const empf = einkaufEmpfMap.get(b.sorte.id) ?? 0;
                 return (
@@ -1008,28 +1170,45 @@ export const Getraenke: React.FC = () => {
                       {empf > 0 && <span className={styles.einkaufEmpf} title="Empfohlene Bestellung">Empf. {empf}</span>}
                     </div>
                     <div className={styles.einkaufMeta}>Lager: {formatBestand(b.lager, b.sorte.flaschenProKasten)}</div>
-                    <div className={styles.formRow}>
-                      <div className={styles.formGroup}>
-                        <label>Kästen</label>
+
+                    {/* Stepper statt Zahlenfeld: im Markt einhändig bedienbar. */}
+                    <div className={styles.einkaufMengeRow}>
+                      <span className={styles.stockLabel}>Kästen</span>
+                      <div className={styles.stepper}>
+                        <button
+                          className={`${styles.stepBtn} ${styles.btnMinus}`}
+                          title="Ein Kasten weniger"
+                          disabled={row.menge <= 0}
+                          onClick={() => setEinkaufRow(b, { menge: Math.max(0, row.menge - 1) })}
+                        >−</button>
                         <input
                           type="number" min={0} step={1} inputMode="numeric"
+                          className={styles.einkaufMenge}
                           value={row.menge}
                           onChange={e => setEinkaufRow(b, { menge: Math.max(0, parseInt(e.target.value) || 0) })}
+                          aria-label={`Kästen ${b.sorte.name}`}
                         />
+                        <button
+                          className={`${styles.stepBtn} ${styles.btnPlus}`}
+                          title="Ein Kasten mehr"
+                          onClick={() => setEinkaufRow(b, { menge: row.menge + 1 })}
+                        >+</button>
                       </div>
-                      <div className={styles.formGroup}>
-                        <label>Preis €/Kasten</label>
-                        <input
-                          type="number" min={0} step={0.01} inputMode="decimal"
-                          value={row.preis}
-                          onChange={e => setEinkaufRow(b, { preis: Math.max(0, parseFloat(e.target.value) || 0) })}
-                        />
-                      </div>
+                    </div>
+
+                    <div className={styles.formGroup}>
+                      <label>Preis €/Kasten</label>
+                      <input
+                        type="number" min={0} step={0.01} inputMode="decimal"
+                        value={row.preis}
+                        onChange={e => setEinkaufRow(b, { preis: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      />
                     </div>
                   </div>
                 );
               })}
             </div>
+            )}
 
             <div className={styles.einkaufFooter}>
               <div className={styles.einkaufSumme}>Einkaufssumme: <strong>{einkaufSumme.toFixed(2)} €</strong></div>
@@ -1052,6 +1231,7 @@ export const Getraenke: React.FC = () => {
           kopplung={kopplung}
           onAssign={handleAssignBarcode}
           onVerwerfen={verwirfOffenen}
+          onNeueSorte={openSorteAusScan}
         />
       )}
 
@@ -1240,9 +1420,14 @@ export const Getraenke: React.FC = () => {
 
       {/* Neue Sorte / Sorte bearbeiten */}
       {modal === 'neueSorte' && (
-        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
+        <div className={styles.modalOverlay} onClick={() => { setNeueSorteAusCode(null); setModal('none'); }}>
           <div className={styles.modal} onClick={e => e.stopPropagation()}>
             <h2>{editSorteId ? 'Sorte bearbeiten' : 'Neue Sorte anlegen'}</h2>
+            {neueSorteAusCode && (
+              <p className={styles.mehrFelderHinweis}>
+                Aus dem Scan von <code>{neueSorteAusCode}</code> – der Barcode ist schon hinterlegt.
+              </p>
+            )}
             {actionError && <div className={styles.errorMessage}>{actionError}</div>}
             <div className={styles.formGroup}>
               <label>Name</label>
@@ -1264,72 +1449,110 @@ export const Getraenke: React.FC = () => {
                   <option value="alkoholisch">Alkoholisch</option>
                 </select>
               </div>
-              <div className={styles.formGroup}>
-                <label>Flaschen pro Kasten</label>
+            </div>
+
+            <div className={styles.formGroup}>
+              <label>Gebinde</label>
+              <div className={styles.gebindeWahl}>
+                {GEBINDE.map(g => (
+                  <button
+                    key={g.wert}
+                    type="button"
+                    className={`${styles.gebindeBtn} ${sorteForm.flaschenProKasten === g.wert ? styles.gebindeBtnAktiv : ''}`}
+                    onClick={() => setSorteForm({ ...sorteForm, flaschenProKasten: g.wert })}
+                  >
+                    {g.label}
+                  </button>
+                ))}
                 <input
                   type="number"
                   min={1}
                   max={100}
+                  className={styles.gebindeEigen}
                   value={sorteForm.flaschenProKasten}
                   onChange={e => setSorteForm({ ...sorteForm, flaschenProKasten: parseInt(e.target.value) || 1 })}
+                  aria-label="Flaschen pro Kasten"
+                  title="Flaschen pro Kasten"
                 />
               </div>
             </div>
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Warnschwelle (Kästen)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={sorteForm.warnschwelle}
-                  onChange={e => setSorteForm({ ...sorteForm, warnschwelle: parseInt(e.target.value) || 0 })}
-                />
+
+            {namensDublette && (
+              <div className={styles.hinweisBox}>
+                <i className="fas fa-circle-info"></i>
+                <span>Es gibt schon eine Sorte <strong>{namensDublette}</strong>. Anlegen geht trotzdem.</span>
+              </div>
+            )}
+
+            <details className={styles.mehrFelder} open={editSorteId !== null}>
+              <summary>Preise, Schwellen und Barcodes</summary>
+
+              <p className={styles.mehrFelderHinweis}>
+                Alles hier ist freiwillig. Leer heisst: Warnschwelle {SORTE_VORGABEN.warnschwelle},
+                Soll-Bestand {SORTE_VORGABEN.sollBestand} Kästen, Preise noch offen. Der
+                Einkaufspreis trägt sich beim ersten Einbuchen von selbst nach.
+              </p>
+
+              <div className={styles.formRow}>
+                <div className={styles.formGroup}>
+                  <label>Warnschwelle (Kästen)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={sorteForm.warnschwelle}
+                    placeholder={String(SORTE_VORGABEN.warnschwelle)}
+                    onChange={e => setSorteForm({ ...sorteForm, warnschwelle: zahlOderLeer(e.target.value) })}
+                  />
+                </div>
+                <div className={styles.formGroup}>
+                  <label>Soll-Bestand (Kästen)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={sorteForm.sollBestand}
+                    placeholder={String(SORTE_VORGABEN.sollBestand)}
+                    onChange={e => setSorteForm({ ...sorteForm, sollBestand: zahlOderLeer(e.target.value) })}
+                  />
+                </div>
+              </div>
+              <div className={styles.formRow}>
+                <div className={styles.formGroup}>
+                  <label>Einkaufspreis (€/Kasten)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={sorteForm.einkaufspreis}
+                    placeholder="noch offen"
+                    onChange={e => setSorteForm({ ...sorteForm, einkaufspreis: zahlOderLeer(e.target.value, true) })}
+                  />
+                </div>
+                <div className={styles.formGroup}>
+                  <label>Verkaufspreis (€/Flasche)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={sorteForm.verkaufspreis}
+                    placeholder="noch offen"
+                    onChange={e => setSorteForm({ ...sorteForm, verkaufspreis: zahlOderLeer(e.target.value, true) })}
+                  />
+                </div>
               </div>
               <div className={styles.formGroup}>
-                <label>Soll-Bestand (Kästen)</label>
+                <label>Barcodes (EAN, kommagetrennt – für Scan-Einlagerung)</label>
                 <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={sorteForm.sollBestand}
-                  onChange={e => setSorteForm({ ...sorteForm, sollBestand: parseInt(e.target.value) || 0 })}
+                  type="text"
+                  value={(sorteForm.barcodes ?? []).join(', ')}
+                  onChange={e => setSorteForm({ ...sorteForm, barcodes: e.target.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean) })}
+                  placeholder="z.B. 4001686386002, 4001686386019"
                 />
               </div>
-            </div>
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Einkaufspreis (€/Kasten)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={sorteForm.einkaufspreis}
-                  onChange={e => setSorteForm({ ...sorteForm, einkaufspreis: parseFloat(e.target.value) || 0 })}
-                />
-              </div>
-              <div className={styles.formGroup}>
-                <label>Verkaufspreis (€/Flasche)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={sorteForm.verkaufspreis}
-                  onChange={e => setSorteForm({ ...sorteForm, verkaufspreis: parseFloat(e.target.value) || 0 })}
-                />
-              </div>
-            </div>
-            <div className={styles.formGroup}>
-              <label>Barcodes (EAN, kommagetrennt – für Scan-Einlagerung)</label>
-              <input
-                type="text"
-                value={(sorteForm.barcodes ?? []).join(', ')}
-                onChange={e => setSorteForm({ ...sorteForm, barcodes: e.target.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean) })}
-                placeholder="z.B. 4001686386002, 4001686386019"
-              />
-            </div>
+            </details>
             <div className={styles.modalActions}>
-              <button className={styles.btnSecondary} onClick={() => setModal('none')}>Abbrechen</button>
+              <button className={styles.btnSecondary} onClick={() => { setNeueSorteAusCode(null); setModal('none'); }}>Abbrechen</button>
               <button className={styles.btnPrimary} onClick={handleSorteSubmit} disabled={actionLoading || !sorteForm.name.trim()}>
                 {actionLoading ? 'Speichern...' : editSorteId ? 'Speichern' : 'Anlegen'}
               </button>

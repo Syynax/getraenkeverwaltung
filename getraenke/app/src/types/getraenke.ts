@@ -65,14 +65,18 @@ export interface BestandMitSorte extends Bestand {
   unterWarnschwelle: boolean;
 }
 
+/**
+ * Pflicht sind nur Name, Kategorie und Gebindegrösse. Die übrigen Felder dürfen
+ * leer bleiben – der Server setzt dann seine Vorgaben ein.
+ */
 export interface SorteFormData {
   name: string;
   kategorie: Kategorie;
   flaschenProKasten: number;
-  warnschwelle: number;
-  einkaufspreis: number;
-  verkaufspreis: number;
-  sollBestand: number;
+  warnschwelle: number | '';
+  einkaufspreis: number | '';
+  verkaufspreis: number | '';
+  sollBestand: number | '';
   barcodes?: string[];
 }
 

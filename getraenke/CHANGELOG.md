@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.4.0
+
+### Sorte anlegen
+
+- **Neue Sorte direkt aus einem Scan**: In der Zuordnen-Box gibt es neben
+  „Zuordnen & einbuchen" jetzt **Neue Sorte daraus anlegen**. Name und
+  Gebindegrösse kommen – soweit vorhanden – aus dem Produkt-Lookup, der Barcode
+  ist schon hinterlegt
+- **Pflicht sind nur noch Name, Kategorie und Gebinde.** Warnschwelle,
+  Soll-Bestand und die beiden Preise dürfen leer bleiben; der Server setzt dann
+  2 Kästen, 4 Kästen und „Preis noch offen" ein. Der Einkaufspreis trägt sich
+  beim ersten Einbuchen ohnehin selbst nach
+- **Gebinde als Knöpfe** (20er, 24er, 12er, 11er, 6er) statt Zahleneingabe,
+  daneben weiterhin ein freies Feld
+- Preise, Schwellen und Barcodes sitzen zusammengeklappt hinter einem Aufklapper
+- **Hinweis bei gleichem Namen**, bevor „Cola" zum zweiten Mal entsteht.
+  Angelegt wird trotzdem – zwei Grössen derselben Marke sind erlaubt
+- Beim Bearbeiten setzt ein leer gelassenes Feld den bisherigen Wert nicht mehr
+  auf 0 zurück
+
+### Einkauf
+
+- **Standardmässig nur die Sorten, die nachbestellt werden sollen** – mit
+  Umschalter auf alle Sorten. Zeilen mit erfasster Menge bleiben immer sichtbar
+- **± statt Zahlenfeld** für die Kästen, einhändig bedienbar
+- **Der Entwurf übersteht einen Reload**: erfasste Mengen und Preise liegen in
+  der Sitzung, ein Neuladen im Getränkemarkt kostet sie nicht mehr
+- Neuer Knopf **Mengen zurücksetzen**
+- Soll-Bestand 0 heisst jetzt wirklich „nie nachbestellen" statt „nimm 4"
+
 ## 1.3.0
 
 Die Automaten sind weg – geführt wird nur noch der Lagerbestand.

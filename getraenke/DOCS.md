@@ -8,7 +8,7 @@ der Feuerwehr-Einsatzstatistik in ein eigenständiges Home-Assistant-Add-on.
 | Tab | Inhalt |
 | --- | --- |
 | **Bestand** | Kästen pro Sorte im Lager, Schnellbuchung ±1 Kasten, Einkaufsliste mit Bestellempfehlung |
-| **Einkauf** | Kompletten Einkauf mit Menge und Preis je Kasten auf einmal ins Lager buchen |
+| **Einkauf** | Kompletten Einkauf mit Menge und Preis je Kasten auf einmal ins Lager buchen; zeigt standardmässig nur, was nachbestellt werden soll |
 | **Scannen** | Flaschen-Barcode scannen → 1 Kasten dieser Sorte ins Lager; wahlweise mit einem Handy als gekoppeltem Scanner; unbekannte Codes werden in einer offenen Produktdatenbank nachgeschlagen und lassen sich einer Sorte zuordnen |
 | **Events** | Sommerfest & Co. mit eigener Einkaufsliste (Getränkesorten + freie Artikel), druckbar |
 | **Auswertung** | Letzte Buchungen, Verbrauch pro Monat, Kassenbericht (Einnahmen/Ausgaben/Gewinn) |
@@ -78,6 +78,43 @@ Weitere Details:
   Add-on offen weiter (sonst käme niemand mehr rein) und zeigt einen Warnbalken.
 
 Der Benutzername steht oben rechts; ein Klick darauf meldet ab.
+
+## Sorten anlegen
+
+Pflicht sind nur **Name**, **Kategorie** und **Gebinde**. Für das Gebinde stehen
+die üblichen Grössen als Knöpfe bereit, daneben bleibt ein freies Feld.
+
+Alles Weitere – Warnschwelle, Soll-Bestand, Einkaufs- und Verkaufspreis – steckt
+zusammengeklappt hinter **Preise, Schwellen und Barcodes** und darf leer bleiben.
+Dann gilt:
+
+| Feld | Vorgabe, wenn leer |
+| --- | --- |
+| Warnschwelle | 2 Kästen |
+| Soll-Bestand | 4 Kästen |
+| Einkaufspreis | offen – wird beim ersten Einbuchen automatisch gesetzt |
+| Verkaufspreis | offen – für den Kassenbericht später nachtragen |
+
+**Soll-Bestand 0** heisst „nie nachbestellen" – die Sorte taucht dann nicht mehr
+in der Einkaufsliste auf.
+
+Der schnellste Weg führt über den Scanner: Ist ein Barcode unbekannt, steht in
+der Zuordnen-Box neben „Zuordnen & einbuchen" auch **Neue Sorte daraus anlegen**.
+Name und Gebinde kommen dann aus der Produktdatenbank, der Barcode ist schon
+hinterlegt – meist bleibt nur noch Bestätigen.
+
+## Einkaufen
+
+Der Einkauf-Tab zeigt standardmässig nur die Sorten, für die eine Bestellung
+ansteht; über **Alle Sorten** kommt man an jede andere heran. Eine Zeile, in der
+schon eine Menge steht, bleibt immer sichtbar.
+
+Die Menge wird über **−** und **+** erfasst, der Preis je Kasten ist mit dem
+zuletzt bekannten vorbelegt. **Einkauf verbuchen** legt für jede Zeile mit Menge
+einen Eingang an und schreibt den Preis auf der Sorte fort.
+
+Der Entwurf übersteht ein Neuladen der Seite – im Getränkemarkt mit wackligem
+Netz geht damit nichts verloren. **Mengen zurücksetzen** leert ihn wieder.
 
 ## Daten aus der Einsatzstatistik übernehmen
 

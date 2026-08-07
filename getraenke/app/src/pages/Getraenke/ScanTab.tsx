@@ -37,6 +37,8 @@ interface ScanTabProps {
   kopplung: ScanKopplung;
   onAssign: (code: string, sorteId: number) => void;
   onVerwerfen: (code: string) => void;
+  /** Öffnet das Sorten-Formular, vorbelegt aus dem Produkt-Lookup. */
+  onNeueSorte: (offen: OffenerCode) => void;
 }
 
 /**
@@ -94,6 +96,7 @@ export const ScanTab: React.FC<ScanTabProps> = ({
   kopplung,
   onAssign,
   onVerwerfen,
+  onNeueSorte,
 }) => {
   const supported = typeof getDetectorCtor() === 'function';
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -366,6 +369,16 @@ export const ScanTab: React.FC<ScanTabProps> = ({
                       Zuordnen & einbuchen
                     </button>
                   </div>
+
+                  {/* Kein Treffer in der Liste? Dann gibt es die Sorte noch nicht. */}
+                  <button
+                    className={styles.scanNeueSorte}
+                    onClick={() => onNeueSorte(offen)}
+                    disabled={busy}
+                  >
+                    <i className="fas fa-plus"></i> Neue Sorte daraus anlegen
+                    {offen.produkt && <span className={styles.scanNeueSorteMeta}>Name kommt aus dem Treffer</span>}
+                  </button>
                 </div>
               );
             })}
