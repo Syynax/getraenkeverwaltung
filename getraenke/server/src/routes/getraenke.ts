@@ -711,6 +711,9 @@ router.get('/bestand', async (_req: Request, res: Response) => {
         gesamt: b.lager,
         unterWarnschwelle: unterWarnschwelle(sorte, b.lager),
         // Zum Gruppieren in der Oberfläche – erspart einen zweiten Abgleich dort.
+        // Die Id gehört dazu: Ein Abgleich allein über den Namen wäre unnötig
+        // fragil, sobald ein Name wiederverwendet wird.
+        oberkategorieId: gruppe?.id ?? null,
         oberkategorieName: gruppe?.name ?? null,
       };
     });

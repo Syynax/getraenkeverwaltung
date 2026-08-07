@@ -66,6 +66,53 @@ test('Aufräumen ohne Reste meldet einfach false', async () => {
   assert.equal(await raeumeAbbruchReste(datei), false);
 });
 
+test('Zwischenspeicher liefert dieselben Daten wie das Original', async () => {
+  const datei = await tempDatei('{"sorten":[{"id":1,"name":"Cola"}]}');
+  const ersteLesung = await loadJsonFile(datei, null);
+  const zweiteLesung = await loadJsonFile(datei, null);
+  assert.deepEqual(zweiteLesung, ersteLesung);
+});
+
+test('Zwischenspeicher gibt Kopien heraus, keine geteilte Referenz', async () => {
+  // Sonst würde eine abgebrochene Buchung ihre Zwischenstände in den
+  // Zwischenspeicher schreiben und der nächste Leser bekäme Phantomdaten.
+  const datei = await tempDatei('{"sorten":[{"id":1,"name":"Cola"}]}');
+
+  const a = await loadJsonFile<{ sorten: { id: number; name: string }[] }>(datei, { sorten: [] });
+  a.sorten[0].name = 'VERÄNDERT';
+  a.sorten.push({ id: 99, name: 'Phantom' });
+
+  const b = await loadJsonFile<{ sorten: { id: number; name: string }[] }>(datei, { sorten: [] });
+  assert.equal(b.sorten.length, 1);
+  assert.equal(b.sorten[0].name, 'Cola');
+});
+
+test('Zwischenspeicher merkt, wenn die Datei ausgetauscht wurde', async () => {
+  // Fall aus der Praxis: jemand kopiert eine Sicherung zurück, während das
+  // Add-on läuft.
+  const datei = await tempDatei('{"zaehler":1}');
+  assert.deepEqual(await loadJsonFile(datei, null), { zaehler: 1 });
+
+  await fs.writeFile(datei, '{"zaehler":2,"mehr":"platz"}', 'utf-8');
+  assert.deepEqual(await loadJsonFile(datei, null), { zaehler: 2, mehr: 'platz' });
+});
+
+test('Schreiben verwirft den Zwischenspeicher', async () => {
+  const datei = await tempDatei('{"zaehler":1}');
+  await loadJsonFile(datei, null);
+
+  await saveJsonFile(datei, { zaehler: 42 });
+  assert.deepEqual(await loadJsonFile(datei, null), { zaehler: 42 });
+});
+
+test('Eine kaputte Datei wird nicht aus dem Zwischenspeicher geschönt', async () => {
+  const datei = await tempDatei('{"zaehler":1}');
+  await loadJsonFile(datei, null);
+
+  await fs.writeFile(datei, '{ kaputt', 'utf-8');
+  await assert.rejects(() => loadJsonFile(datei, null), DatenDefektError);
+});
+
 test('Die Sperre serialisiert gleichzeitige Schreibvorgänge', async () => {
   const datei = await tempDatei();
   const reihenfolge: string[] = [];

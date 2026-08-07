@@ -24,6 +24,25 @@ import {
   deleteOberkategorie as apiDeleteOberkategorie,
 } from '../services/api';
 
+/**
+ * Gezielt nachladen statt alles.
+ *
+ * Vorher zog jede Buchung acht Endpunkte nach – ein Klick auf „+1 Kasten" ergab
+ * neun Anfragen. Jede Mutation nennt jetzt, was sie tatsächlich verändert hat:
+ * ein Einkauf rührt keine Events an, ein Event keinen Bestand.
+ */
+const TEILE = ['sorten', 'bestand', 'buchungen', 'einkauf', 'events', 'statistik', 'kasse', 'gruppen'] as const;
+type Teil = (typeof TEILE)[number];
+
+/** Eine Buchung berührt Zahlen, Verlauf, Bedarf und Kasse. */
+const NACH_BUCHUNG: readonly Teil[] = ['bestand', 'buchungen', 'einkauf', 'statistik', 'kasse', 'gruppen'];
+/** Bestand direkt gesetzt – ohne Buchung, also ohne Verlauf und ohne Kasse. */
+const NACH_BESTAND: readonly Teil[] = ['bestand', 'einkauf', 'gruppen'];
+/** Sorten und Gruppen sind Stammdaten und verschieben damit den Bedarf. */
+const NACH_STAMMDATEN: readonly Teil[] = ['sorten', 'bestand', 'einkauf', 'gruppen'];
+/** Events hängen an nichts anderem. */
+const NACH_EVENT: readonly Teil[] = ['events'];
+
 export interface EinkaufBuchung {
   sorteId: number;
   menge: number;
@@ -71,30 +90,26 @@ export const useGetraenke = (): UseGetraenkeReturn => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // silent = true: Hintergrund-Aktualisierung ohne Vollbild-Spinner (z.B. nach
-  // einer Buchung). Nur der erste Load zeigt den Lade-Zustand.
-  const fetchAll = useCallback(async (signal?: AbortSignal, silent = false) => {
+  const fetchAll = useCallback(async (
+    signal?: AbortSignal,
+    silent = false,
+    teile: readonly Teil[] = TEILE,
+  ) => {
+    const gefragt = new Set<Teil>(teile);
     try {
       if (!silent) setLoading(true);
       setError(null);
-      const [sortenData, bestandData, buchungenData, einkaufsData, eventsData, statistikData, kassenberichtData, gruppenData] = await Promise.all([
-        getSorten(signal),
-        getBestand(signal),
-        getBuchungen(undefined, 50, signal),
-        getEinkaufsliste(signal),
-        getEvents(signal),
-        getVerbrauchsstatistik(signal),
-        getKassenbericht(signal),
-        getOberkategorien(signal),
+
+      await Promise.all([
+        gefragt.has('sorten') ? getSorten(signal).then(setSorten) : null,
+        gefragt.has('bestand') ? getBestand(signal).then(setBestandState) : null,
+        gefragt.has('buchungen') ? getBuchungen(undefined, 50, signal).then(setBuchungen) : null,
+        gefragt.has('einkauf') ? getEinkaufsliste(signal).then(setEinkaufsliste) : null,
+        gefragt.has('events') ? getEvents(signal).then(setEvents) : null,
+        gefragt.has('statistik') ? getVerbrauchsstatistik(signal).then(setStatistik) : null,
+        gefragt.has('kasse') ? getKassenbericht(signal).then(setKassenbericht) : null,
+        gefragt.has('gruppen') ? getOberkategorien(signal).then(setOberkategorien) : null,
       ]);
-      setSorten(sortenData);
-      setBestandState(bestandData);
-      setBuchungen(buchungenData);
-      setEinkaufsliste(einkaufsData);
-      setEvents(eventsData);
-      setStatistik(statistikData);
-      setKassenbericht(kassenberichtData);
-      setOberkategorien(gruppenData);
     } catch (err) {
       if (err instanceof Error && err.name === 'CanceledError') return;
       setError(err instanceof Error ? err.message : 'Fehler beim Laden der Getränkedaten');
@@ -111,22 +126,22 @@ export const useGetraenke = (): UseGetraenkeReturn => {
 
   const createSorte = useCallback(async (data: SorteFormData) => {
     await apiCreateSorte(data);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_STAMMDATEN);
   }, [fetchAll]);
 
   const updateSorte = useCallback(async (id: number, data: SorteFormData) => {
     await apiUpdateSorte(id, data);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_STAMMDATEN);
   }, [fetchAll]);
 
   const deleteSorte = useCallback(async (id: number) => {
     await apiDeleteSorte(id);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_STAMMDATEN);
   }, [fetchAll]);
 
   const setBestand = useCallback(async (sorteId: number, lager: number) => {
     await apiSetBestand(sorteId, { lager });
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_BESTAND);
   }, [fetchAll]);
 
   const buchen = useCallback(async (data: BuchungFormData) => {
@@ -143,34 +158,34 @@ export const useGetraenke = (): UseGetraenkeReturn => {
       };
     }));
     // Buchungen/Einkaufsliste/Statistik im Hintergrund nachziehen (ohne Spinner).
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_BUCHUNG);
   }, [fetchAll]);
 
   const createOberkategorie = useCallback(async (data: OberkategorieFormData) => {
     await apiCreateOberkategorie(data);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_STAMMDATEN);
   }, [fetchAll]);
 
   const updateOberkategorie = useCallback(async (id: number, data: OberkategorieFormData) => {
     await apiUpdateOberkategorie(id, data);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_STAMMDATEN);
   }, [fetchAll]);
 
   const deleteOberkategorie = useCallback(async (id: number) => {
     const { geloesteSorten } = await apiDeleteOberkategorie(id);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_STAMMDATEN);
     return geloesteSorten;
   }, [fetchAll]);
 
   const stornieren = useCallback(async (id: number) => {
     await storniereBuchung(id);
     // Storno berührt Bestand, Verlauf und Kasse – alles frisch holen.
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_BUCHUNG);
   }, [fetchAll]);
 
   const inventur = useCallback(async (zaehlung: InventurZeile[], notiz?: string) => {
     const ergebnis = await bucheInventur(zaehlung, notiz);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_BUCHUNG);
     return ergebnis;
   }, [fetchAll]);
 
@@ -188,22 +203,22 @@ export const useGetraenke = (): UseGetraenkeReturn => {
         notiz: 'Einkauf',
       });
     }
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_BUCHUNG);
   }, [fetchAll]);
 
   const createEvent = useCallback(async (data: BesonderesEventFormData) => {
     await apiCreateEvent(data);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_EVENT);
   }, [fetchAll]);
 
   const updateEvent = useCallback(async (id: number, data: BesonderesEventFormData) => {
     await apiUpdateEvent(id, data);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_EVENT);
   }, [fetchAll]);
 
   const deleteEvent = useCallback(async (id: number) => {
     await apiDeleteEvent(id);
-    await fetchAll(undefined, true);
+    await fetchAll(undefined, true, NACH_EVENT);
   }, [fetchAll]);
 
   return {

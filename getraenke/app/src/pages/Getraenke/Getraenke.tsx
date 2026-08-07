@@ -715,8 +715,26 @@ export const Getraenke: React.FC = () => {
     preis: b.sorte.einkaufspreis ?? 0,
   };
 
+  /** Ausgangswert einer Zeile, ohne den State zum Renderzeitpunkt zu lesen. */
+  const einkaufRowAus = (b: BestandMitSorte, draft: EinkaufDraft) => draft[b.sorte.id] ?? {
+    menge: einkaufEmpfMap.get(b.sorte.id) ?? 0,
+    preis: b.sorte.einkaufspreis ?? 0,
+  };
+
   const setEinkaufRow = (b: BestandMitSorte, patch: Partial<{ menge: number; preis: number }>) => {
-    setEinkaufDraft(prev => ({ ...prev, [b.sorte.id]: { ...getEinkaufRow(b), ...patch } }));
+    setEinkaufDraft(prev => ({ ...prev, [b.sorte.id]: { ...einkaufRowAus(b, prev), ...patch } }));
+  };
+
+  /**
+   * Menge relativ verändern. Muss aus `prev` rechnen: Vier schnelle Klicks auf
+   * „+" landen im selben Render-Durchlauf und würden sonst alle denselben
+   * Ausgangswert sehen – drei davon gingen verloren.
+   */
+  const aendereEinkaufMenge = (b: BestandMitSorte, delta: number) => {
+    setEinkaufDraft(prev => {
+      const zeile = einkaufRowAus(b, prev);
+      return { ...prev, [b.sorte.id]: { ...zeile, menge: Math.max(0, zeile.menge + delta) } };
+    });
   };
 
   // Standardmässig nur zeigen, was wirklich ansteht – plus alles, wo schon eine
@@ -728,6 +746,39 @@ export const Getraenke: React.FC = () => {
   ), [bestand, einkaufEmpfMap, einkaufDraft, gruppenSortenIds]);
 
   const einkaufSichtbar = nurNachbestellen ? einkaufOffen : bestand;
+
+  /**
+   * Einkauf nach Oberkategorie geblockt, damit der Gruppenbedarf dort steht, wo
+   * die Mengen erfasst werden. Ohne das müsste man sich merken, wie viele
+   * Kästen Bier noch fehlen, während man sie auf die Marken verteilt.
+   */
+  const einkaufGruppiert = useMemo(() => {
+    const bedarfJeGruppe = new Map(einkaufsliste.gruppen.map(g => [g.oberkategorie.id, g]));
+    const bloecke = new Map<number | null, { id: number | null; name: string | null; eintraege: BestandMitSorte[] }>();
+
+    for (const b of einkaufSichtbar) {
+      const schluessel = b.oberkategorieId;
+      const vorhanden = bloecke.get(schluessel);
+      if (vorhanden) vorhanden.eintraege.push(b);
+      else bloecke.set(schluessel, { id: schluessel, name: b.oberkategorieName, eintraege: [b] });
+    }
+
+    return [...bloecke.values()].sort((a, b) => {
+      if (a.name === null) return 1;
+      if (b.name === null) return -1;
+      return a.name.localeCompare(b.name, 'de');
+    }).map(block => {
+      const bedarf = block.id != null ? bedarfJeGruppe.get(block.id) : undefined;
+      // Was in diesem Block schon erfasst ist – zählt live mit beim Hochsteppen.
+      const erfasst = block.eintraege.reduce((summe, b) => summe + getEinkaufRow(b).menge, 0);
+      return {
+        ...block,
+        bedarf,
+        erfasst,
+        offen: bedarf ? Math.max(0, bedarf.empfohleneBestellung - erfasst) : 0,
+      };
+    });
+  }, [einkaufSichtbar, einkaufsliste, einkaufDraft, einkaufEmpfMap]);
 
   const einkaufSumme = useMemo(() =>
     bestand.reduce((sum, b) => {
@@ -898,13 +949,13 @@ export const Getraenke: React.FC = () => {
    * einzelnen Marken zusammenzählen zu müssen.
    */
   const bestandGruppiert = useMemo(() => {
-    const gruppen = new Map<string, { name: string | null; eintraege: BestandMitSorte[] }>();
+    const gruppen = new Map<number | null, { id: number | null; name: string | null; eintraege: BestandMitSorte[] }>();
 
     for (const b of bestand) {
-      const schluessel = b.oberkategorieName ?? '';
+      const schluessel = b.oberkategorieId;
       const vorhanden = gruppen.get(schluessel);
       if (vorhanden) vorhanden.eintraege.push(b);
-      else gruppen.set(schluessel, { name: b.oberkategorieName, eintraege: [b] });
+      else gruppen.set(schluessel, { id: schluessel, name: b.oberkategorieName, eintraege: [b] });
     }
 
     return [...gruppen.values()].sort((a, b) => {
@@ -913,7 +964,7 @@ export const Getraenke: React.FC = () => {
       if (b.name === null) return -1;
       return a.name.localeCompare(b.name, 'de');
     }).map(gruppe => {
-      const info = gruppe.name ? oberkategorien.find(g => g.name === gruppe.name) : undefined;
+      const info = gruppe.id != null ? oberkategorien.find(g => g.id === gruppe.id) : undefined;
       const kaesten = gruppe.eintraege.reduce((s, e) => s + e.lager / e.sorte.flaschenProKasten, 0);
       return { ...gruppe, info, kaesten };
     });
@@ -1208,7 +1259,7 @@ export const Getraenke: React.FC = () => {
             </div>
           ) : (
             bestandGruppiert.map(gruppe => (
-            <div key={gruppe.name ?? '__eigen'} className={styles.gruppenBlock}>
+            <div key={gruppe.id ?? '__eigen'} className={styles.gruppenBlock}>
               {/* Kopfzeile nur, wenn es überhaupt Oberkategorien gibt. */}
               {(gruppe.name || bestandGruppiert.length > 1) && (
                 <div className={styles.gruppenKopf}>
@@ -1375,8 +1426,30 @@ export const Getraenke: React.FC = () => {
                 <p>Nichts nachzubestellen. Über <strong>Alle Sorten</strong> kommst du trotzdem an jede Sorte.</p>
               </div>
             ) : (
+            einkaufGruppiert.map(block => (
+            <div key={block.id ?? '__eigen'} className={styles.gruppenBlock}>
+              {(block.name || einkaufGruppiert.length > 1) && (
+                <div className={styles.gruppenKopf}>
+                  <span className={styles.gruppenName}>
+                    {block.name ? (
+                      <><i className="fas fa-layer-group"></i> {block.name}</>
+                    ) : (
+                      <><i className="fas fa-bottle-water"></i> Einzelne Sorten</>
+                    )}
+                  </span>
+                  {/* Der Gruppenbedarf gehört genau hierhin: Er zählt beim
+                      Hochsteppen live herunter, egal auf welche Marke. */}
+                  {block.bedarf && (
+                    <span className={`${styles.gruppenSumme} ${block.offen === 0 ? styles.gruppenErledigt : ''}`}>
+                      {block.offen === 0
+                        ? <><i className="fas fa-check"></i> {block.bedarf.empfohleneBestellung} Kästen verteilt</>
+                        : <>noch {block.offen} von {block.bedarf.empfohleneBestellung} Kästen zu verteilen</>}
+                    </span>
+                  )}
+                </div>
+              )}
             <div className={styles.sorteGrid}>
-              {einkaufSichtbar.map(b => {
+              {block.eintraege.map(b => {
                 const row = getEinkaufRow(b);
                 const empf = einkaufEmpfMap.get(b.sorte.id) ?? 0;
                 return (
@@ -1399,7 +1472,7 @@ export const Getraenke: React.FC = () => {
                           className={`${styles.stepBtn} ${styles.btnMinus}`}
                           title="Ein Kasten weniger"
                           disabled={row.menge <= 0}
-                          onClick={() => setEinkaufRow(b, { menge: Math.max(0, row.menge - 1) })}
+                          onClick={() => aendereEinkaufMenge(b, -1)}
                         >−</button>
                         <input
                           type="number" min={0} step={1} inputMode="numeric"
@@ -1411,7 +1484,7 @@ export const Getraenke: React.FC = () => {
                         <button
                           className={`${styles.stepBtn} ${styles.btnPlus}`}
                           title="Ein Kasten mehr"
-                          onClick={() => setEinkaufRow(b, { menge: row.menge + 1 })}
+                          onClick={() => aendereEinkaufMenge(b, +1)}
                         >+</button>
                       </div>
                     </div>
@@ -1428,6 +1501,8 @@ export const Getraenke: React.FC = () => {
                 );
               })}
             </div>
+            </div>
+            ))
             )}
 
             <div className={styles.einkaufFooter}>
@@ -1584,7 +1659,9 @@ export const Getraenke: React.FC = () => {
                       )}
                     </td>
                     <td>
-                      {!b.storniert && b.typ !== 'inventur' && (
+                      {/* Auch eine Inventur ist stornierbar – wer sich beim
+                          Zählen vertut, muss das zurücknehmen können. */}
+                      {!b.storniert && (
                         <button
                           className={styles.stornoBtn}
                           title="Diese Buchung stornieren"

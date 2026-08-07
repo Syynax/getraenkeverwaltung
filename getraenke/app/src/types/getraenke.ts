@@ -101,7 +101,8 @@ export interface BestandMitSorte extends Bestand {
   sorte: Sorte;
   gesamt: number;
   unterWarnschwelle: boolean;
-  /** Name der Oberkategorie, oder null für eine eigenständige Sorte. */
+  /** Oberkategorie der Sorte, oder null für eine eigenständige Sorte. */
+  oberkategorieId: number | null;
   oberkategorieName: string | null;
 }
 

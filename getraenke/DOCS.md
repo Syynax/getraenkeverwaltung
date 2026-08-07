@@ -155,6 +155,11 @@ Der Einkauf-Tab zeigt standardmässig nur die Sorten, für die eine Bestellung
 ansteht; über **Alle Sorten** kommt man an jede andere heran. Eine Zeile, in der
 schon eine Menge steht, bleibt immer sichtbar.
 
+Der Einkauf ist wie der Bestand nach Oberkategorien geblockt. Über jeder Gruppe
+steht, wie viel noch zu verteilen ist – „noch 6 von 7 Kästen zu verteilen" –
+und die Zahl zählt beim Erfassen live herunter, egal auf welche Marke. Sind alle
+verteilt, wird die Zeile grün.
+
 Die Menge wird über **−** und **+** erfasst, der Preis je Kasten ist mit dem
 zuletzt bekannten vorbelegt. **Einkauf verbuchen** legt für jede Zeile mit Menge
 einen Eingang an und schreibt den Preis auf der Sorte fort.
@@ -343,7 +348,7 @@ Schwund taucht im Kassenbericht als eigene Kachel auf: der Wert, der in der
 Kasse fehlt. In den Gewinn geht er nicht ein, denn es ist kein Geld geflossen.
 
 **Stornieren:** In **Auswertung → Letzte Buchungen** hat jede Zeile einen
-Rückwärtspfeil. Der dreht die Bestandswirkung zurück; die Buchung bleibt
+Rückwärtspfeil – auch Inventurbuchungen, wer sich beim Zählen vertut. Der dreht die Bestandswirkung zurück; die Buchung bleibt
 durchgestrichen stehen und zählt nirgends mehr mit. Gelöscht wird nichts – eine
 Kassenprüfung soll sehen können, dass korrigiert wurde. Würde der Bestand durch
 den Storno negativ, wird er abgelehnt; dann ist die Ware zwischenzeitlich

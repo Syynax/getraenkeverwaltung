@@ -113,9 +113,11 @@ Tests laufen ohne zusätzliche Abhängigkeit über den eingebauten Node-Runner:
 cd getraenke/server && npm test
 ```
 
-Abgedeckt sind die Rechenregeln (`src/domain/berechnung.ts`), die
-Automaten-Migration, der Sortenvorschlag aus dem Produkt-Lookup und die
-Dateiablage samt Sperre und Defekterkennung.
+Abgedeckt sind die Rechenregeln (`src/domain/berechnung.ts`), Anmeldung und
+Tokenprüfung, die Bremse gegen Passwort-Raten, die Sicherungsrotation, die
+Scan-Kopplung, der Sortenvorschlag aus dem Produkt-Lookup, die
+Automaten-Migration und die Dateiablage samt Sperre, Zwischenspeicher und
+Defekterkennung.
 
 Für Frontend-Entwicklung mit Hot-Reload zusätzlich im Ordner `getraenke/app`:
 
@@ -138,4 +140,4 @@ in einem Cookie – der Ingress-Pfad wechselt, ein Cookie-Path liefe ins Leere.
 
 ## Änderungen
 
-Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.6.0**.
+Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.7.0**.

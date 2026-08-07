@@ -483,6 +483,11 @@
   color: var(--text-muted, #9ca3af);
 }
 
+/* Gruppenbedarf im Einkauf ist erledigt – alle Kästen verteilt. */
+.gruppenErledigt {
+  color: var(--signal-green, #15803d);
+}
+
 /* Kennzeichnet eine Gruppenzeile in der Einkaufsliste. */
 .gruppenMarke {
   margin-left: 0.4rem;

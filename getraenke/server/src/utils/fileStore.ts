@@ -53,6 +53,25 @@ export class DatenDefektError extends Error {
 }
 
 /**
+ * Zwischenspeicher der geparsten Datei.
+ *
+ * Jede Anzeige im Frontend liest den kompletten Datenbestand; ein einziger
+ * Klick auf „+1 Kasten" löste bisher ein knappes Dutzend vollständiger
+ * Lese- und Parse-Vorgänge aus. Der Vergleich von Änderungszeit und Grösse
+ * kostet einen `stat`, das Parsen dagegen die ganze Datei.
+ *
+ * Über `stat` statt eines eigenen Zählers, damit auch eine von aussen
+ * ausgetauschte Datei erkannt wird – etwa wenn jemand eine Sicherung
+ * zurückkopiert, während das Add-on läuft.
+ */
+const parseCache = new Map<string, { mtimeMs: number; size: number; daten: unknown }>();
+
+/** Zwischenspeicher einer Datei verwerfen. */
+export function verwerfeCache(filePath: string): void {
+  parseCache.delete(filePath);
+}
+
+/**
  * Lädt eine JSON-Datei.
  *
  * Der Fallback greift **nur**, wenn die Datei gar nicht existiert – also beim
@@ -62,6 +81,22 @@ export class DatenDefektError extends Error {
  * gesamte Getränkebestand wäre weg.
  */
 export async function loadJsonFile<T>(filePath: string, fallback: T): Promise<T> {
+  let stand: { mtimeMs: number; size: number } | null = null;
+  try {
+    const info = await fs.stat(filePath);
+    stand = { mtimeMs: info.mtimeMs, size: info.size };
+
+    const gecacht = parseCache.get(filePath);
+    if (gecacht && gecacht.mtimeMs === stand.mtimeMs && gecacht.size === stand.size) {
+      // Tiefe Kopie: Die Aufrufer verändern die Daten (Buchen, Storno …).
+      // Ohne Kopie würden sie in den Zwischenspeicher zurückschlagen.
+      return structuredClone(gecacht.daten) as T;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return fallback;
+    throw new DatenDefektError(filePath, err);
+  }
+
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
@@ -76,11 +111,18 @@ export async function loadJsonFile<T>(filePath: string, fallback: T): Promise<T>
     throw new DatenDefektError(filePath, new Error('Die Datei ist leer'));
   }
 
+  let daten: T;
   try {
-    return JSON.parse(raw) as T;
+    daten = JSON.parse(raw) as T;
   } catch (err) {
     throw new DatenDefektError(filePath, err);
   }
+
+  if (stand) {
+    parseCache.set(filePath, { ...stand, daten });
+    return structuredClone(daten);
+  }
+  return daten;
 }
 
 /**
@@ -92,6 +134,9 @@ export async function loadJsonFile<T>(filePath: string, fallback: T): Promise<T>
 export async function saveJsonFile(filePath: string, data: unknown): Promise<void> {
   const tmpPath = `${filePath}.tmp`;
   const inhalt = JSON.stringify(data, null, 2);
+
+  // Der alte Stand ist ab jetzt überholt – auch falls das Schreiben scheitert.
+  verwerfeCache(filePath);
 
   const datei = await fs.open(tmpPath, 'w');
   try {

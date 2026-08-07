@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.7.0
+
+### Schneller
+
+- **Der Server hält den geparsten Datenbestand vor.** Bisher las und zerlegte
+  jede Anzeige die komplette Datei neu; ein Klick auf „+1 Kasten" löste ein
+  knappes Dutzend vollständiger Lesevorgänge aus. Erkannt wird eine Änderung
+  über Zeitstempel und Grösse – wer eine Sicherung zurückkopiert, während das
+  Add-on läuft, bekommt trotzdem den neuen Stand
+- **Die Oberfläche lädt gezielt nach statt alles.** Eine Buchung zieht nicht
+  mehr Events und Stammdaten mit; ein Klick auf „+1 Kasten" macht statt neun nur
+  noch sieben Anfragen, und die übrigen sind Treffer im Zwischenspeicher
+
+### Einkauf
+
+- **Der Gruppenbedarf steht jetzt im Einkauf-Tab**, wo die Mengen erfasst
+  werden: „noch 6 von 7 Kästen zu verteilen", live mitzählend über alle Marken
+  der Gruppe hinweg. Sind alle verteilt, wird die Zeile grün. Bisher stand die
+  Zahl nur in der Einkaufsliste im Bestand-Tab – man musste sie sich merken
+- Der Einkauf ist wie der Bestand nach Oberkategorien geblockt
+- **Schnelle Klicks auf ± gehen nicht mehr verloren.** Vier Klicks kurz
+  hintereinander zählten bisher als einer, weil jeder vom selben Ausgangswert
+  ausging
+
+### Kleinigkeiten
+
+- **Auch eine Inventur lässt sich stornieren.** Die Schnittstelle konnte es
+  schon, die Oberfläche blendete den Knopf aber aus – wer sich beim Zählen
+  vertut, muss das zurücknehmen können
+- Oberkategorien werden intern über ihre Id zusammengeführt statt über den
+  Namen; ein wiederverwendeter Name bringt die Zuordnung nicht mehr durcheinander
+- **109 Tests** statt 61: neu abgedeckt sind Anmeldung und Tokenprüfung, die
+  Bremse gegen Passwort-Raten, die Sicherungsrotation, die Scan-Kopplung und der
+  neue Zwischenspeicher
+
 ## 1.6.0
 
 ### Oberkategorien
