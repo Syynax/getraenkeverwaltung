@@ -6,10 +6,40 @@ export type BuchungsStandort = (typeof BUCHUNGS_STANDORTE)[number];
 export type EventStatus = (typeof EVENT_STATI)[number];
 export type EventPositionTyp = (typeof EVENT_POSITION_TYPEN)[number];
 
+/**
+ * Klammer über mehrere Marken, z.B. „Bier" über Augustiner, Tegernseer und was
+ * gerade zum Probieren dasteht. Der Soll-Bestand gilt für die Gruppe als
+ * Ganzes – so löst nicht jede einmalig gekaufte Marke eine Nachbestellung aus.
+ */
+export interface Oberkategorie {
+  id: number;
+  name: string;
+  sollBestand: number;
+  warnschwelle: number;
+  aktiv: boolean;
+}
+
+/** Oberkategorie samt errechnetem Bestand, wie sie die API liefert. */
+export interface OberkategorieMitBestand extends Oberkategorie {
+  sortenAnzahl: number;
+  /** Alles, was in der Gruppe steht – die Zahl fürs Regal. */
+  aktuellerBestand: number;
+  /** Nur Sorten ohne eigenen Soll – daran misst sich der Bedarf der Gruppe. */
+  bestandFuerSoll: number;
+  unterWarnschwelle: boolean;
+}
+
+export interface OberkategorieFormData {
+  name: string;
+  sollBestand: number | '';
+  warnschwelle: number | '';
+}
+
 export interface Sorte {
   id: number;
   name: string;
   kategorie: Kategorie;
+  oberkategorieId?: number | null;
   flaschenProKasten: number;
   warnschwelle: number;
   einkaufspreis: number;
@@ -71,6 +101,8 @@ export interface BestandMitSorte extends Bestand {
   sorte: Sorte;
   gesamt: number;
   unterWarnschwelle: boolean;
+  /** Name der Oberkategorie, oder null für eine eigenständige Sorte. */
+  oberkategorieName: string | null;
 }
 
 /**
@@ -80,6 +112,8 @@ export interface BestandMitSorte extends Bestand {
 export interface SorteFormData {
   name: string;
   kategorie: Kategorie;
+  /** null = eigenständige Sorte ohne Oberkategorie. */
+  oberkategorieId: number | null;
   flaschenProKasten: number;
   warnschwelle: number | '';
   einkaufspreis: number | '';
@@ -119,6 +153,19 @@ export interface EinkaufslistenEintrag {
   sorte: Sorte;
   aktuellerBestand: number;
   empfohleneBestellung: number;
+}
+
+/** Bedarf einer ganzen Oberkategorie – welche Marke es wird, entscheidet der Einkauf. */
+export interface GruppenBedarf {
+  oberkategorie: Oberkategorie;
+  sorten: Sorte[];
+  aktuellerBestand: number;
+  empfohleneBestellung: number;
+}
+
+export interface Einkaufsliste {
+  sorten: EinkaufslistenEintrag[];
+  gruppen: GruppenBedarf[];
 }
 
 export interface VerbrauchsMonat {

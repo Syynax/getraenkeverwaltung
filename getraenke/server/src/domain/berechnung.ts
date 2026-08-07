@@ -1,4 +1,4 @@
-import type { Sorte, Bestand, Buchung } from '../types/getraenke';
+import type { Sorte, Bestand, Buchung, Oberkategorie } from '../types/getraenke';
 
 /**
  * Die Rechenregeln der Getränkekasse – bewusst als reine Funktionen ohne
@@ -32,6 +32,136 @@ export function empfohleneBestellung(sorte: Sorte, lagerFlaschen: number): numbe
 export function unterWarnschwelle(sorte: Sorte, lagerFlaschen: number): boolean {
   const proKasten = sorte.flaschenProKasten > 0 ? sorte.flaschenProKasten : 1;
   return lagerFlaschen / proKasten < (sorte.warnschwelle ?? SORTE_VORGABEN.warnschwelle);
+}
+
+/** Kästen einer Sorte aus dem Flaschenbestand. */
+export const kaesten = (sorte: Sorte, lagerFlaschen: number): number =>
+  lagerFlaschen / (sorte.flaschenProKasten > 0 ? sorte.flaschenProKasten : 1);
+
+export interface SortenBedarf {
+  sorte: Sorte;
+  aktuellerBestand: number;
+  empfohleneBestellung: number;
+}
+
+export interface GruppenBedarf {
+  oberkategorie: Oberkategorie;
+  /** Die Sorten der Gruppe, die auf den Gruppen-Soll einzahlen. */
+  sorten: Sorte[];
+  aktuellerBestand: number;
+  empfohleneBestellung: number;
+}
+
+/**
+ * Was nachbestellt werden sollte – getrennt nach eigenständigen Sorten und
+ * Gruppen.
+ *
+ * Die Aufteilung folgt einer Regel: Eine Sorte mit eigenem Soll-Bestand wird
+ * einzeln geführt, wie bisher. Eine Sorte **ohne** eigenen Soll-Bestand, die
+ * einer Oberkategorie angehört, zahlt auf deren Soll ein. Genau das braucht
+ * man für Probierbiere: Sie sollen keine eigene Nachbestellung auslösen, aber
+ * mitzählen, wenn es darum geht, ob genug Bier da ist.
+ *
+ * Eine Sorte ohne eigenen Soll und ohne Gruppe löst gar nichts aus.
+ */
+export function ermittleBedarf(
+  sorten: Sorte[],
+  lagerJeSorte: (sorteId: number) => number,
+  oberkategorien: Oberkategorie[],
+): { sorten: SortenBedarf[]; gruppen: GruppenBedarf[] } {
+  const aktiveSorten = sorten.filter(s => s.aktiv);
+  const gruppenNachId = new Map(oberkategorien.filter(g => g.aktiv).map(g => [g.id, g]));
+
+  const einzeln: SortenBedarf[] = [];
+  const gruppenInhalt = new Map<number, Sorte[]>();
+
+  for (const sorte of aktiveSorten) {
+    const eigenerSoll = sorte.sollBestand ?? SORTE_VORGABEN.sollBestand;
+    const gruppe = sorte.oberkategorieId != null ? gruppenNachId.get(sorte.oberkategorieId) : undefined;
+
+    if (eigenerSoll > 0) {
+      const lager = lagerJeSorte(sorte.id);
+      const empfehlung = empfohleneBestellung(sorte, lager);
+      if (empfehlung > 0) {
+        einzeln.push({ sorte, aktuellerBestand: kaesten(sorte, lager), empfohleneBestellung: empfehlung });
+      }
+      continue;
+    }
+
+    // Kein eigener Soll: zahlt auf die Gruppe ein, sofern es eine gibt.
+    if (gruppe) {
+      const bisher = gruppenInhalt.get(gruppe.id) ?? [];
+      bisher.push(sorte);
+      gruppenInhalt.set(gruppe.id, bisher);
+    }
+  }
+
+  const gruppen: GruppenBedarf[] = [];
+  for (const [gruppenId, gruppenSorten] of gruppenInhalt) {
+    const gruppe = gruppenNachId.get(gruppenId);
+    if (!gruppe || gruppe.sollBestand <= 0) continue;
+
+    const bestandKaesten = gruppenSorten.reduce(
+      (summe, s) => summe + kaesten(s, lagerJeSorte(s.id)),
+      0,
+    );
+    const empfehlung = Math.max(0, Math.ceil(gruppe.sollBestand - bestandKaesten));
+    if (empfehlung > 0) {
+      gruppen.push({
+        oberkategorie: gruppe,
+        sorten: gruppenSorten,
+        aktuellerBestand: bestandKaesten,
+        empfohleneBestellung: empfehlung,
+      });
+    }
+  }
+
+  return {
+    sorten: einzeln,
+    gruppen: gruppen.sort((a, b) => a.oberkategorie.name.localeCompare(b.oberkategorie.name, 'de')),
+  };
+}
+
+/** Bestand einer Gruppe in Kästen, über alle zugehörigen Sorten. */
+export function gruppenBestand(
+  gruppenId: number,
+  sorten: Sorte[],
+  lagerJeSorte: (sorteId: number) => number,
+): number {
+  return sorten
+    .filter(s => s.aktiv && s.oberkategorieId === gruppenId)
+    .reduce((summe, s) => summe + kaesten(s, lagerJeSorte(s.id)), 0);
+}
+
+/**
+ * Der Teil des Gruppenbestands, der auf den Gruppen-Soll zählt: nur Sorten ohne
+ * eigenen Soll-Bestand.
+ *
+ * Das weicht bewusst von `gruppenBestand` ab. Eine Sorte mit eigenem Soll wird
+ * schon einzeln nachbestellt; zählte sie auch auf die Gruppe, käme sie doppelt
+ * in den Einkauf. Für die reine Anzeige „wie viel Bier steht da" ist dagegen
+ * der Gesamtbestand die richtige Zahl – deshalb gibt es beide.
+ */
+export function gruppenBestandFuerSoll(
+  gruppenId: number,
+  sorten: Sorte[],
+  lagerJeSorte: (sorteId: number) => number,
+): number {
+  return sorten
+    .filter(s => s.aktiv
+      && s.oberkategorieId === gruppenId
+      && (s.sollBestand ?? SORTE_VORGABEN.sollBestand) <= 0)
+    .reduce((summe, s) => summe + kaesten(s, lagerJeSorte(s.id)), 0);
+}
+
+/** Liegt eine Gruppe unter ihrer Warnschwelle? */
+export function gruppeUnterWarnschwelle(
+  gruppe: Oberkategorie,
+  sorten: Sorte[],
+  lagerJeSorte: (sorteId: number) => number,
+): boolean {
+  if (gruppe.warnschwelle <= 0) return false;
+  return gruppenBestand(gruppe.id, sorten, lagerJeSorte) < gruppe.warnschwelle;
 }
 
 export interface VerbrauchsMonat {

@@ -6,10 +6,32 @@ export type BuchungsStandort = (typeof BUCHUNGS_STANDORTE)[number];
 export type EventStatus = (typeof EVENT_STATI)[number];
 export type EventPositionTyp = (typeof EVENT_POSITION_TYPEN)[number];
 
+/**
+ * Klammer über mehrere Marken, z.B. „Bier" über Augustiner, Tegernseer und was
+ * gerade zum Probieren dasteht.
+ *
+ * Der Sinn steckt im Soll-Bestand: Es soll nicht jede einmalig gekaufte Marke
+ * eine eigene Nachbestellung auslösen, sondern die Gruppe als Ganzes muss
+ * gefüllt bleiben – welche Marke das ist, entscheidet sich beim Einkauf.
+ */
+export interface Oberkategorie {
+  id: number;
+  name: string;
+  /** Soll-Bestand in Kästen über alle Sorten der Gruppe zusammen. 0 = kein Bedarf. */
+  sollBestand: number;
+  /** Warnschwelle in Kästen für die Gruppe. */
+  warnschwelle: number;
+  aktiv: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface Sorte {
   id: number;
   name: string;
   kategorie: Kategorie;
+  /** Zugehörige Oberkategorie, oder null für eine eigenständige Sorte. */
+  oberkategorieId?: number | null;
   flaschenProKasten: number;
   warnschwelle: number;
   einkaufspreis: number;
@@ -75,4 +97,6 @@ export interface GetraenkeData {
   bestand: Bestand[];
   buchungen: Buchung[];
   events: BesonderesEvent[];
+  /** Optional: Datenbestände von vor 1.6.0 haben das Feld noch nicht. */
+  oberkategorien: Oberkategorie[];
 }

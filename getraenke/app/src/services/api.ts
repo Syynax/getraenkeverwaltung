@@ -8,7 +8,6 @@ import type {
   BuchungFormData,
   BesonderesEvent,
   BesonderesEventFormData,
-  EinkaufslistenEintrag,
   BarcodeLookup,
   ScanSitzung,
   ScanEreignis,
@@ -20,6 +19,10 @@ import type {
   AuthStatus,
   InventurZeile,
   InventurErgebnis,
+  Einkaufsliste,
+  Oberkategorie,
+  OberkategorieMitBestand,
+  OberkategorieFormData,
 } from '../types/getraenke';
 
 /**
@@ -154,8 +157,30 @@ export const bucheInventur = async (zaehlung: InventurZeile[], notiz?: string): 
 
 // --- Einkaufsliste ---
 
-export const getEinkaufsliste = async (signal?: AbortSignal): Promise<EinkaufslistenEintrag[]> => {
-  const response = await api.get<EinkaufslistenEintrag[]>('/getraenke/einkaufsliste', { signal });
+export const getEinkaufsliste = async (signal?: AbortSignal): Promise<Einkaufsliste> => {
+  const response = await api.get<Einkaufsliste>('/getraenke/einkaufsliste', { signal });
+  return response.data;
+};
+
+// --- Oberkategorien ---
+
+export const getOberkategorien = async (signal?: AbortSignal): Promise<OberkategorieMitBestand[]> => {
+  const response = await api.get<OberkategorieMitBestand[]>('/getraenke/oberkategorien', { signal });
+  return response.data;
+};
+
+export const createOberkategorie = async (data: OberkategorieFormData): Promise<Oberkategorie> => {
+  const response = await api.post<Oberkategorie>('/getraenke/oberkategorien', data);
+  return response.data;
+};
+
+export const updateOberkategorie = async (id: number, data: OberkategorieFormData): Promise<Oberkategorie> => {
+  const response = await api.put<Oberkategorie>(`/getraenke/oberkategorien/${id}`, data);
+  return response.data;
+};
+
+export const deleteOberkategorie = async (id: number): Promise<{ geloesteSorten: number }> => {
+  const response = await api.delete<{ geloesteSorten: number }>(`/getraenke/oberkategorien/${id}`);
   return response.data;
 };
 

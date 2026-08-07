@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { Sorte, Buchung } from '../types/getraenke';
+import type { Sorte, Buchung, Oberkategorie } from '../types/getraenke';
 import {
   empfohleneBestellung,
   unterWarnschwelle,
@@ -8,6 +8,10 @@ import {
   kassenbericht,
   bestandsAenderung,
   istWirksam,
+  ermittleBedarf,
+  gruppenBestand,
+  gruppenBestandFuerSoll,
+  gruppeUnterWarnschwelle,
 } from './berechnung';
 
 const sorte = (teil: Partial<Sorte> = {}): Sorte => ({
@@ -64,6 +68,148 @@ test('Bestellempfehlung: fehlender Soll-Bestand fällt auf die Vorgabe zurück',
 test('Warnschwelle greift unterhalb, aber nicht genau auf der Schwelle', () => {
   assert.equal(unterWarnschwelle(sorte({ warnschwelle: 2 }), 39), true);
   assert.equal(unterWarnschwelle(sorte({ warnschwelle: 2 }), 40), false);
+});
+
+// --- Oberkategorien ---
+
+const gruppe = (teil: Partial<Oberkategorie> = {}): Oberkategorie => ({
+  id: 1,
+  name: 'Bier',
+  sollBestand: 10,
+  warnschwelle: 3,
+  aktiv: true,
+  ...teil,
+});
+
+/** Lager-Nachschlag aus einer einfachen Tabelle sorteId → Flaschen. */
+const lager = (werte: Record<number, number>) => (id: number) => werte[id] ?? 0;
+
+test('Gruppe: mehrere Marken zahlen zusammen auf den Gruppen-Soll ein', () => {
+  const sorten = [
+    sorte({ id: 1, name: 'Augustiner', sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+    sorte({ id: 2, name: 'Tegernseer', sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+  ];
+  // 3 + 2 = 5 Kästen, Soll 10 → 5 fehlen
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 60, 2: 40 }), [gruppe()]);
+
+  assert.deepEqual(bedarf.sorten, []);
+  assert.equal(bedarf.gruppen.length, 1);
+  assert.equal(bedarf.gruppen[0].oberkategorie.name, 'Bier');
+  assert.equal(bedarf.gruppen[0].aktuellerBestand, 5);
+  assert.equal(bedarf.gruppen[0].empfohleneBestellung, 5);
+  assert.deepEqual(bedarf.gruppen[0].sorten.map(s => s.name), ['Augustiner', 'Tegernseer']);
+});
+
+test('Gruppe: ein einmaliges Probierbier löst keine eigene Nachbestellung aus', () => {
+  const sorten = [sorte({ id: 1, name: 'Probier-IPA', sollBestand: 0, oberkategorieId: 1 })];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 0 }), [gruppe({ sollBestand: 0 })]);
+
+  assert.deepEqual(bedarf.sorten, []);
+  assert.deepEqual(bedarf.gruppen, []);
+});
+
+test('Gruppe: volle Gruppe braucht nichts', () => {
+  const sorten = [sorte({ id: 1, sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 })];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 240 }), [gruppe({ sollBestand: 10 })]);
+  assert.deepEqual(bedarf.gruppen, []);
+});
+
+test('Sorte mit eigenem Soll bleibt einzeln, auch wenn sie in einer Gruppe steckt', () => {
+  const sorten = [
+    sorte({ id: 1, name: 'Stammbier', sollBestand: 6, oberkategorieId: 1, flaschenProKasten: 20 }),
+    sorte({ id: 2, name: 'Probierbier', sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+  ];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 20, 2: 20 }), [gruppe({ sollBestand: 10 })]);
+
+  assert.equal(bedarf.sorten.length, 1);
+  assert.equal(bedarf.sorten[0].sorte.name, 'Stammbier');
+  assert.equal(bedarf.sorten[0].empfohleneBestellung, 5);
+
+  // Das Stammbier zahlt nicht zusätzlich auf die Gruppe ein – sonst wäre es doppelt gezählt.
+  assert.equal(bedarf.gruppen[0].aktuellerBestand, 1);
+  assert.equal(bedarf.gruppen[0].empfohleneBestellung, 9);
+});
+
+test('Sorte ohne Soll und ohne Gruppe löst gar nichts aus', () => {
+  const bedarf = ermittleBedarf([sorte({ id: 1, sollBestand: 0, oberkategorieId: null })], lager({}), []);
+  assert.deepEqual(bedarf.sorten, []);
+  assert.deepEqual(bedarf.gruppen, []);
+});
+
+test('Gruppe: inaktive Sorten zählen nicht mit', () => {
+  const sorten = [
+    sorte({ id: 1, sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+    sorte({ id: 2, sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20, aktiv: false }),
+  ];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 20, 2: 200 }), [gruppe({ sollBestand: 10 })]);
+  assert.equal(bedarf.gruppen[0].aktuellerBestand, 1);
+});
+
+test('Gruppe: eine deaktivierte Oberkategorie greift nicht mehr', () => {
+  const sorten = [sorte({ id: 1, sollBestand: 0, oberkategorieId: 1 })];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 0 }), [gruppe({ aktiv: false })]);
+  assert.deepEqual(bedarf.gruppen, []);
+});
+
+test('Gruppe: verwaiste Zuordnung wird ignoriert, nicht zum Fehler', () => {
+  const sorten = [sorte({ id: 1, sollBestand: 0, oberkategorieId: 99 })];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 0 }), [gruppe({ id: 1 })]);
+  assert.deepEqual(bedarf.gruppen, []);
+});
+
+test('Gruppe: angebrochene Kästen werden über die Gruppe aufgerundet', () => {
+  const sorten = [
+    sorte({ id: 1, sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+    sorte({ id: 2, sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+  ];
+  // 0,5 + 0,5 Kästen = 1 ganzer Kasten → bei Soll 4 fehlen 3
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 10, 2: 10 }), [gruppe({ sollBestand: 4 })]);
+  assert.equal(bedarf.gruppen[0].empfohleneBestellung, 3);
+});
+
+test('Gruppe: eine Marke in der Gruppe erscheint nie doppelt', () => {
+  // Weder in sorten noch mehrfach in gruppen – sonst würde man zweimal bestellen.
+  const sorten = [
+    sorte({ id: 1, name: 'Augustiner', sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+  ];
+  const bedarf = ermittleBedarf(sorten, lager({ 1: 0 }), [gruppe({ sollBestand: 10 })]);
+
+  assert.equal(bedarf.sorten.length, 0);
+  assert.equal(bedarf.gruppen.length, 1);
+  assert.equal(bedarf.gruppen[0].sorten.filter(s => s.id === 1).length, 1);
+});
+
+test('Gruppenbestand summiert nur die eigene Gruppe', () => {
+  const sorten = [
+    sorte({ id: 1, oberkategorieId: 1, flaschenProKasten: 20 }),
+    sorte({ id: 2, oberkategorieId: 2, flaschenProKasten: 20 }),
+    sorte({ id: 3, oberkategorieId: null, flaschenProKasten: 20 }),
+  ];
+  assert.equal(gruppenBestand(1, sorten, lager({ 1: 40, 2: 60, 3: 80 })), 2);
+});
+
+test('Gruppenbestand für den Soll lässt Sorten mit eigenem Soll aussen vor', () => {
+  const sorten = [
+    sorte({ id: 1, name: 'Probierbier', sollBestand: 0, oberkategorieId: 1, flaschenProKasten: 20 }),
+    sorte({ id: 2, name: 'Stammbier', sollBestand: 6, oberkategorieId: 1, flaschenProKasten: 20 }),
+  ];
+  const stand = lager({ 1: 40, 2: 60 });
+
+  // Fürs Regal zählt alles, für den Gruppen-Soll nur das Probierbier.
+  assert.equal(gruppenBestand(1, sorten, stand), 5);
+  assert.equal(gruppenBestandFuerSoll(1, sorten, stand), 2);
+});
+
+test('Gruppen-Warnschwelle greift unterhalb, aber nicht darauf', () => {
+  const sorten = [sorte({ id: 1, oberkategorieId: 1, flaschenProKasten: 20 })];
+  const g = gruppe({ warnschwelle: 3 });
+  assert.equal(gruppeUnterWarnschwelle(g, sorten, lager({ 1: 40 })), true);
+  assert.equal(gruppeUnterWarnschwelle(g, sorten, lager({ 1: 60 })), false);
+});
+
+test('Gruppen-Warnschwelle 0 warnt nie', () => {
+  const sorten = [sorte({ id: 1, oberkategorieId: 1 })];
+  assert.equal(gruppeUnterWarnschwelle(gruppe({ warnschwelle: 0 }), sorten, lager({ 1: 0 })), false);
 });
 
 // --- Verbrauch ---

@@ -7,7 +7,7 @@ der Feuerwehr-Einsatzstatistik in ein eigenständiges Home-Assistant-Add-on.
 
 | Tab | Inhalt |
 | --- | --- |
-| **Bestand** | Kästen pro Sorte im Lager, Schnellbuchung ±1 Kasten, Einkaufsliste mit Bestellempfehlung |
+| **Bestand** | Kästen pro Sorte im Lager, nach Oberkategorien gruppiert, Schnellbuchung ±1 Kasten, Einkaufsliste mit Bestellempfehlung |
 | **Einkauf** | Kompletten Einkauf mit Menge und Preis je Kasten auf einmal ins Lager buchen; zeigt standardmässig nur, was nachbestellt werden soll |
 | **Scannen** | Flaschen-Barcode scannen → 1 Kasten dieser Sorte ins Lager; wahlweise mit einem Handy als gekoppeltem Scanner; unbekannte Codes werden in einer offenen Produktdatenbank nachgeschlagen und lassen sich einer Sorte zuordnen |
 | **Events** | Sommerfest & Co. mit eigener Einkaufsliste (Getränkesorten + freie Artikel), druckbar |
@@ -82,6 +82,48 @@ Weitere Details:
   Add-on offen weiter (sonst käme niemand mehr rein) und zeigt einen Warnbalken.
 
 Der Benutzername steht oben rechts; ein Klick darauf meldet ab.
+
+## Oberkategorien – mehrere Marken unter einem Dach
+
+Eine Oberkategorie fasst Marken zusammen: **Bier** über Augustiner, Tegernseer
+und was gerade zum Probieren dasteht. Jede Marke bleibt eine eigene Sorte mit
+eigenen Barcodes, eigenem Preis und eigenem Bestand – die Klammer sitzt darüber.
+
+Der Nutzen steckt im **Soll-Bestand der Gruppe**: Nachbestellt wird, wenn
+insgesamt zu wenig Bier da ist – nicht sobald eine einzelne Marke leer ist. Ein
+Sixpack, das einmal zum Probieren gekauft wurde, soll schliesslich nicht ewig auf
+der Einkaufsliste stehen.
+
+Anzulegen unter **Bestand → Oberkategorien**. Beim Anlegen einer Sorte wählt man
+sie im Feld **Oberkategorie**.
+
+### Wer zahlt auf den Gruppen-Soll ein
+
+| Sorte | Verhalten |
+| --- | --- |
+| in einer Gruppe, **ohne** eigenen Soll-Bestand | zählt auf den Gruppen-Soll, löst selbst nichts aus |
+| in einer Gruppe, **mit** eigenem Soll-Bestand | wird einzeln nachbestellt und zählt **nicht** auf die Gruppe |
+| ohne Gruppe, mit Soll-Bestand | wie bisher einzeln |
+| ohne Gruppe, ohne Soll-Bestand | taucht nie in der Einkaufsliste auf |
+
+Die zweite Zeile ist Absicht: Ein Stammbier mit eigenem Soll wird ohnehin
+nachbestellt. Zählte es auch noch auf die Gruppe, käme es doppelt in den Einkauf.
+
+Wählt man beim Anlegen eine Oberkategorie und lässt den Soll-Bestand leer, ist
+die Vorgabe deshalb **0** – die Sorte zahlt dann auf die Gruppe ein. Ohne Gruppe
+bleibt die Vorgabe bei 4 Kästen.
+
+### Zwei Zahlen, zwei Bedeutungen
+
+Im Bestand steht über jeder Gruppe, wie viel **insgesamt** dasteht – das ist die
+Zahl fürs Regal. Der Dialog **Oberkategorien** zeigt zusätzlich, welcher Teil
+davon auf den Soll zählt, etwa „5,0 Kästen gesamt · 2,0 von 10 auf den Soll".
+Die Einkaufsliste rechnet mit der zweiten Zahl.
+
+### Eine Oberkategorie entfernen
+
+Die Sorten darin bleiben samt Bestand und Buchungen erhalten und stehen danach
+einzeln. Weg ist nur die Klammer.
 
 ## Sorten anlegen
 

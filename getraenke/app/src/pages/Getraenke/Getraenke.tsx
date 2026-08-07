@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useGetraenke } from '../../hooks/useGetraenke';
 import { useScanKopplung } from '../../hooks/useScanKopplung';
 import { EVENT_STATI, EVENT_POSITION_TYPEN } from '../../constants/getraenke';
-import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, Kategorie, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData, InventurAbweichung } from '../../types/getraenke';
+import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, Kategorie, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData, InventurAbweichung, OberkategorieFormData, OberkategorieMitBestand } from '../../types/getraenke';
 import { GermanDateInput } from '../../components';
 import { lookupBarcode } from '../../services/api';
 import { ScanTab, type ScanFeedback, type OffenerCode } from './ScanTab';
@@ -90,6 +90,7 @@ const merkeEinkaufDraft = (draft: EinkaufDraft): void => {
 const leereSorte = (): SorteFormData => ({
   name: '',
   kategorie: 'alkoholfrei',
+  oberkategorieId: null,
   flaschenProKasten: 20,
   warnschwelle: '',
   einkaufspreis: '',
@@ -110,7 +111,7 @@ const gebindeAusMenge = (menge: string | null | undefined): number | null => {
   return zahl >= 1 && zahl <= 100 ? zahl : null;
 };
 
-type ModalType = 'none' | 'neueSorte' | 'buchung' | 'bestandKorrektur' | 'event' | 'inventur';
+type ModalType = 'none' | 'neueSorte' | 'buchung' | 'bestandKorrektur' | 'event' | 'inventur' | 'oberkategorien';
 type SubTab = 'bestand' | 'einkauf' | 'scan' | 'events' | 'auswertung';
 
 const SUB_TABS: { id: SubTab; label: string; icon: string }[] = [
@@ -162,6 +163,10 @@ export const Getraenke: React.FC = () => {
     createEvent,
     updateEvent,
     deleteEvent,
+    oberkategorien,
+    createOberkategorie,
+    updateOberkategorie,
+    deleteOberkategorie,
   } = useGetraenke();
 
   const [modal, setModal] = useState<ModalType>('none');
@@ -212,6 +217,7 @@ export const Getraenke: React.FC = () => {
   const [sorteForm, setSorteForm] = useState<SorteFormData>({
     name: '',
     kategorie: 'alkoholfrei',
+    oberkategorieId: null,
     flaschenProKasten: 20,
     warnschwelle: '',
     einkaufspreis: '',
@@ -273,6 +279,52 @@ export const Getraenke: React.FC = () => {
   // Einkaufsliste ref for export
   const einkaufslisteRef = useRef<HTMLDivElement>(null);
 
+  // Oberkategorien verwalten
+  const [gruppeForm, setGruppeForm] = useState<OberkategorieFormData>({ name: '', sollBestand: '', warnschwelle: '' });
+  const [editGruppeId, setEditGruppeId] = useState<number | null>(null);
+
+  const openOberkategorien = () => {
+    setGruppeForm({ name: '', sollBestand: '', warnschwelle: '' });
+    setEditGruppeId(null);
+    setActionError(null);
+    setModal('oberkategorien');
+  };
+
+  const handleGruppeSubmit = async () => {
+    if (!gruppeForm.name.trim()) return;
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      if (editGruppeId !== null) await updateOberkategorie(editGruppeId, gruppeForm);
+      else await createOberkategorie(gruppeForm);
+      setGruppeForm({ name: '', sollBestand: '', warnschwelle: '' });
+      setEditGruppeId(null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Speichern fehlgeschlagen');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleGruppeLoeschen = async (g: OberkategorieMitBestand) => {
+    if (!confirm(`Oberkategorie „${g.name}" entfernen?\n\nDie ${g.sortenAnzahl} Sorte(n) darin bleiben mit ihrem Bestand erhalten und stehen danach einzeln.`)) {
+      return;
+    }
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await deleteOberkategorie(g.id);
+      if (editGruppeId === g.id) {
+        setEditGruppeId(null);
+        setGruppeForm({ name: '', sollBestand: '', warnschwelle: '' });
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Löschen fehlgeschlagen');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Inventur: gezählte Flaschen je Sorte, leer heisst „noch nicht gezählt".
   const [inventurZaehlung, setInventurZaehlung] = useState<Record<number, number | ''>>({});
   const [inventurNotiz, setInventurNotiz] = useState('');
@@ -323,7 +375,8 @@ export const Getraenke: React.FC = () => {
   // Computed data
   const stats = useMemo(() => {
     const lagerFlaschen = bestand.reduce((sum, b) => sum + b.lager, 0);
-    const warnungen = einkaufsliste.length;
+    // Eine Gruppe zählt als eine Meldung, egal wie viele Marken darin stecken.
+    const warnungen = einkaufsliste.sorten.length + einkaufsliste.gruppen.length;
     return { lagerFlaschen, warnungen };
   }, [bestand, einkaufsliste]);
 
@@ -381,6 +434,7 @@ export const Getraenke: React.FC = () => {
     setSorteForm({
       name: b.sorte.name,
       kategorie: b.sorte.kategorie,
+      oberkategorieId: b.sorte.oberkategorieId ?? null,
       flaschenProKasten: b.sorte.flaschenProKasten,
       warnschwelle: b.sorte.warnschwelle,
       einkaufspreis: b.sorte.einkaufspreis || 0,
@@ -619,9 +673,42 @@ export const Getraenke: React.FC = () => {
 
   // --- Einkauf-Tab ---
   const einkaufEmpfMap = useMemo(
-    () => new Map(einkaufsliste.map(e => [e.sorte.id, e.empfohleneBestellung])),
+    () => new Map(einkaufsliste.sorten.map(e => [e.sorte.id, e.empfohleneBestellung])),
     [einkaufsliste]
   );
+
+  /**
+   * Sorten, die zu einer Gruppe mit Bedarf gehören. Vorbelegt wird hier keine
+   * Menge – welche Marke es wird, entscheidet der Einkauf. Sie sollen aber im
+   * gefilterten Einkauf sichtbar bleiben.
+   */
+  /**
+   * Einkaufsliste zum Anzeigen, Kopieren und Drucken: eigenständige Sorten und
+   * Gruppen in einer gemeinsamen Form. Bei einer Gruppe steht dabei, welche
+   * Marken dazugehören – gekauft wird eine davon.
+   */
+  const einkaufZeilen = useMemo(() => [
+    ...einkaufsliste.sorten.map(e => ({
+      schluessel: `s${e.sorte.id}`,
+      name: e.sorte.name,
+      hinweis: null as string | null,
+      aktuellerBestand: e.aktuellerBestand,
+      empfohleneBestellung: e.empfohleneBestellung,
+    })),
+    ...einkaufsliste.gruppen.map(g => ({
+      schluessel: `g${g.oberkategorie.id}`,
+      name: g.oberkategorie.name,
+      hinweis: g.sorten.map(s => s.name).join(', '),
+      aktuellerBestand: g.aktuellerBestand,
+      empfohleneBestellung: g.empfohleneBestellung,
+    })),
+  ], [einkaufsliste]);
+
+  const gruppenSortenIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const g of einkaufsliste.gruppen) for (const s of g.sorten) ids.add(s.id);
+    return ids;
+  }, [einkaufsliste]);
 
   const getEinkaufRow = (b: BestandMitSorte) => einkaufDraft[b.sorte.id] ?? {
     menge: einkaufEmpfMap.get(b.sorte.id) ?? 0,
@@ -635,8 +722,10 @@ export const Getraenke: React.FC = () => {
   // Standardmässig nur zeigen, was wirklich ansteht – plus alles, wo schon eine
   // Menge drinsteht, sonst würde eine erfasste Zeile beim Filtern verschwinden.
   const einkaufOffen = useMemo(() => bestand.filter(b =>
-    (einkaufEmpfMap.get(b.sorte.id) ?? 0) > 0 || (einkaufDraft[b.sorte.id]?.menge ?? 0) > 0,
-  ), [bestand, einkaufEmpfMap, einkaufDraft]);
+    (einkaufEmpfMap.get(b.sorte.id) ?? 0) > 0
+    || (einkaufDraft[b.sorte.id]?.menge ?? 0) > 0
+    || gruppenSortenIds.has(b.sorte.id),
+  ), [bestand, einkaufEmpfMap, einkaufDraft, gruppenSortenIds]);
 
   const einkaufSichtbar = nurNachbestellen ? einkaufOffen : bestand;
 
@@ -652,6 +741,7 @@ export const Getraenke: React.FC = () => {
   const sorteToFormData = (s: Sorte): SorteFormData => ({
     name: s.name,
     kategorie: s.kategorie,
+    oberkategorieId: s.oberkategorieId ?? null,
     flaschenProKasten: s.flaschenProKasten,
     warnschwelle: s.warnschwelle,
     einkaufspreis: s.einkaufspreis,
@@ -802,6 +892,33 @@ export const Getraenke: React.FC = () => {
     }
   };
 
+  /**
+   * Lagerbestand nach Oberkategorie gruppiert, eigenständige Sorten zuletzt.
+   * So sieht man auf einen Blick, wie viel Bier insgesamt dasteht, ohne die
+   * einzelnen Marken zusammenzählen zu müssen.
+   */
+  const bestandGruppiert = useMemo(() => {
+    const gruppen = new Map<string, { name: string | null; eintraege: BestandMitSorte[] }>();
+
+    for (const b of bestand) {
+      const schluessel = b.oberkategorieName ?? '';
+      const vorhanden = gruppen.get(schluessel);
+      if (vorhanden) vorhanden.eintraege.push(b);
+      else gruppen.set(schluessel, { name: b.oberkategorieName, eintraege: [b] });
+    }
+
+    return [...gruppen.values()].sort((a, b) => {
+      // Eigenständige Sorten ans Ende, sonst alphabetisch.
+      if (a.name === null) return 1;
+      if (b.name === null) return -1;
+      return a.name.localeCompare(b.name, 'de');
+    }).map(gruppe => {
+      const info = gruppe.name ? oberkategorien.find(g => g.name === gruppe.name) : undefined;
+      const kaesten = gruppe.eintraege.reduce((s, e) => s + e.lager / e.sorte.flaschenProKasten, 0);
+      return { ...gruppe, info, kaesten };
+    });
+  }, [bestand, oberkategorien]);
+
   /** Inventur und die alten Auffüllungen führen Flaschen, alles andere Kästen. */
   const mengeText = (b: { typ: string; menge: number }) => {
     if (b.typ === 'inventur') {
@@ -917,10 +1034,11 @@ export const Getraenke: React.FC = () => {
   };
 
   const handleExportEinkaufsliste = () => {
-    if (einkaufsliste.length === 0) return;
+    if (einkaufZeilen.length === 0) return;
     const lines = ['Einkaufsliste - Getränke', '========================', ''];
-    for (const e of einkaufsliste) {
-      lines.push(`${e.sorte.name}: ${e.empfohleneBestellung} Kästen (Bestand: ${Number(e.aktuellerBestand).toFixed(1)} Kästen)`);
+    for (const e of einkaufZeilen) {
+      lines.push(`${e.name}: ${e.empfohleneBestellung} Kästen (Bestand: ${e.aktuellerBestand.toFixed(1)} Kästen)`);
+      if (e.hinweis) lines.push(`    davon eine Marke: ${e.hinweis}`);
     }
     lines.push('', `Erstellt am: ${new Date().toLocaleDateString('de-DE')}`);
     const text = lines.join('\n');
@@ -930,7 +1048,7 @@ export const Getraenke: React.FC = () => {
   };
 
   const handlePrintEinkaufsliste = () => {
-    if (einkaufsliste.length === 0) return;
+    if (einkaufZeilen.length === 0) return;
     const html = `
       <html><head><title>Einkaufsliste</title>
       <style>
@@ -944,7 +1062,7 @@ export const Getraenke: React.FC = () => {
       <h1>Einkaufsliste - Getränke</h1>
       <table>
         <thead><tr><th>Sorte</th><th>Aktueller Bestand</th><th>Bestellen</th></tr></thead>
-        <tbody>${einkaufsliste.map(e => `<tr><td>${escapePrintHtml(e.sorte.name)}</td><td>${escapePrintHtml(`${Number(e.aktuellerBestand).toFixed(1)} Kästen`)}</td><td><strong>${escapePrintHtml(`${e.empfohleneBestellung} Kästen`)}</strong></td></tr>`).join('')}</tbody>
+        <tbody>${einkaufZeilen.map(e => `<tr><td>${escapePrintHtml(e.name)}${e.hinweis ? `<br><small>${escapePrintHtml(e.hinweis)}</small>` : ''}</td><td>${escapePrintHtml(`${e.aktuellerBestand.toFixed(1)} Kästen`)}</td><td><strong>${escapePrintHtml(`${e.empfohleneBestellung} Kästen`)}</strong></td></tr>`).join('')}</tbody>
       </table>
       <p class="date">Erstellt am: ${new Date().toLocaleDateString('de-DE')}</p>
       </body></html>`;
@@ -1072,11 +1190,16 @@ export const Getraenke: React.FC = () => {
         <div className={styles.tableCard}>
           <div className={styles.sectionHeader}>
             <h3><i className="fas fa-warehouse" style={{ marginRight: '0.5rem' }}></i>Lagerbestand</h3>
-            {bestand.length > 0 && (
-              <button className={styles.btnSecondary} onClick={openInventur}>
-                <i className="fas fa-clipboard-check"></i> Inventur
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button className={styles.btnSecondary} onClick={openOberkategorien}>
+                <i className="fas fa-layer-group"></i> Oberkategorien
               </button>
-            )}
+              {bestand.length > 0 && (
+                <button className={styles.btnSecondary} onClick={openInventur}>
+                  <i className="fas fa-clipboard-check"></i> Inventur
+                </button>
+              )}
+            </div>
           </div>
           {bestand.length === 0 ? (
             <div className={styles.emptyState}>
@@ -1084,8 +1207,27 @@ export const Getraenke: React.FC = () => {
               <p>Keine Sorten vorhanden. Lege oben eine neue Sorte an.</p>
             </div>
           ) : (
+            bestandGruppiert.map(gruppe => (
+            <div key={gruppe.name ?? '__eigen'} className={styles.gruppenBlock}>
+              {/* Kopfzeile nur, wenn es überhaupt Oberkategorien gibt. */}
+              {(gruppe.name || bestandGruppiert.length > 1) && (
+                <div className={styles.gruppenKopf}>
+                  <span className={styles.gruppenName}>
+                    {gruppe.name ? (
+                      <><i className="fas fa-layer-group"></i> {gruppe.name}</>
+                    ) : (
+                      <><i className="fas fa-bottle-water"></i> Einzelne Sorten</>
+                    )}
+                  </span>
+                  {/* Nur der Gesamtbestand – der Soll-Vergleich steht in der
+                      Einkaufsliste und bezieht sich auf eine andere Teilmenge. */}
+                  <span className={`${styles.gruppenSumme} ${gruppe.info?.unterWarnschwelle ? styles.stockValueWarn : ''}`}>
+                    {gruppe.kaesten.toFixed(1)} Kästen
+                  </span>
+                </div>
+              )}
             <div className={styles.sorteGrid}>
-              {bestand.map(b => {
+              {gruppe.eintraege.map(b => {
                 const fpk = b.sorte.flaschenProKasten;
                 const lagerCls = b.lager === 0 ? styles.stockValueNull : b.unterWarnschwelle ? styles.stockValueWarn : '';
                 return (
@@ -1138,6 +1280,8 @@ export const Getraenke: React.FC = () => {
                 );
               })}
             </div>
+            </div>
+            ))
           )}
         </div>
 
@@ -1146,9 +1290,9 @@ export const Getraenke: React.FC = () => {
           <div className={styles.einkaufslisteHeader}>
             <h3><i className="fas fa-cart-shopping" style={{ marginRight: '0.5rem' }}></i>Einkaufsliste</h3>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              {einkaufsliste.length > 0 && (
+              {einkaufZeilen.length > 0 && (
                 <>
-                  <span className={styles.einkaufsBadge}>{einkaufsliste.length}</span>
+                  <span className={styles.einkaufsBadge}>{einkaufZeilen.length}</span>
                   <button className={`${styles.quickBtn} ${styles.btnEdit}`} title="Kopieren" onClick={handleExportEinkaufsliste}>
                     <i className="fas fa-copy" style={{ fontSize: '0.6875rem' }}></i>
                   </button>
@@ -1159,18 +1303,22 @@ export const Getraenke: React.FC = () => {
               )}
             </div>
           </div>
-          {einkaufsliste.length === 0 ? (
+          {einkaufZeilen.length === 0 ? (
             <div className={styles.emptyState}>
               <i className="fas fa-check-circle" style={{ color: '#10b981' }}></i>
               <p>Alles auf Lager!</p>
             </div>
           ) : (
-            einkaufsliste.map(e => (
-              <div key={e.sorte.id} className={styles.einkaufsItem}>
+            einkaufZeilen.map(e => (
+              <div key={e.schluessel} className={styles.einkaufsItem}>
                 <div className={styles.einkaufsItemInfo}>
-                  <span className={styles.einkaufsItemName}>{e.sorte.name}</span>
+                  <span className={styles.einkaufsItemName}>
+                    {e.name}
+                    {e.hinweis && <span className={styles.gruppenMarke}>Gruppe</span>}
+                  </span>
                   <span className={styles.einkaufsItemDetail}>
-                    Bestand: {Number(e.aktuellerBestand).toFixed(1)} Kästen
+                    Bestand: {e.aktuellerBestand.toFixed(1)} Kästen
+                    {e.hinweis && <> · {e.hinweis}</>}
                   </span>
                 </div>
                 <div className={styles.einkaufsItemMenge}>
@@ -1521,6 +1669,113 @@ export const Getraenke: React.FC = () => {
       </>
       )}
 
+      {/* Oberkategorien verwalten */}
+      {modal === 'oberkategorien' && (
+        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
+          <div className={`${styles.modal} ${styles.modalLarge}`} onClick={e => e.stopPropagation()}>
+            <h2>Oberkategorien</h2>
+            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
+
+            <p className={styles.mehrFelderHinweis}>
+              Eine Oberkategorie fasst mehrere Marken zusammen – etwa „Bier" über Augustiner,
+              Tegernseer und was gerade zum Probieren dasteht. Der Soll-Bestand gilt für die
+              Gruppe als Ganzes: Nachbestellt wird, wenn insgesamt zu wenig da ist, nicht
+              sobald eine einzelne Marke leer ist.
+            </p>
+
+            {oberkategorien.length > 0 && (
+              <div className={styles.inventurListe}>
+                {oberkategorien.map(g => (
+                  <div key={g.id} className={styles.inventurZeile}>
+                    <div className={styles.inventurName}>
+                      <strong>{g.name}</strong>
+                      <span className={styles.einkaufMeta}>
+                        {g.sortenAnzahl} Sorte{g.sortenAnzahl === 1 ? '' : 'n'} ·{' '}
+                        {g.aktuellerBestand.toFixed(1)} Kästen gesamt
+                        {g.sollBestand > 0
+                          ? ` · ${g.bestandFuerSoll.toFixed(1)} von ${g.sollBestand} auf den Soll`
+                          : ' · kein Soll'}
+                      </span>
+                    </div>
+                    <button
+                      className={styles.stornoBtn}
+                      title="Bearbeiten"
+                      onClick={() => {
+                        setEditGruppeId(g.id);
+                        setGruppeForm({ name: g.name, sollBestand: g.sollBestand, warnschwelle: g.warnschwelle });
+                        setActionError(null);
+                      }}
+                    >
+                      <i className="fas fa-pen"></i>
+                    </button>
+                    <button
+                      className={styles.stornoBtn}
+                      title="Entfernen"
+                      disabled={actionLoading}
+                      onClick={() => handleGruppeLoeschen(g)}
+                    >
+                      <i className="fas fa-trash"></i>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <h3 style={{ fontSize: '0.9375rem', margin: '0.5rem 0' }}>
+              {editGruppeId !== null ? 'Oberkategorie bearbeiten' : 'Neue Oberkategorie'}
+            </h3>
+            <div className={styles.formRow}>
+              <div className={styles.formGroup}>
+                <label>Name</label>
+                <input
+                  type="text"
+                  value={gruppeForm.name}
+                  onChange={e => setGruppeForm({ ...gruppeForm, name: e.target.value })}
+                  placeholder="z.B. Bier"
+                />
+              </div>
+              <div className={styles.formGroup}>
+                <label>Soll-Bestand (Kästen)</label>
+                <input
+                  type="number" min={0} max={500}
+                  value={gruppeForm.sollBestand}
+                  placeholder="0"
+                  onChange={e => setGruppeForm({ ...gruppeForm, sollBestand: zahlOderLeer(e.target.value) })}
+                />
+              </div>
+              <div className={styles.formGroup}>
+                <label>Warnschwelle (Kästen)</label>
+                <input
+                  type="number" min={0} max={500}
+                  value={gruppeForm.warnschwelle}
+                  placeholder="0"
+                  onChange={e => setGruppeForm({ ...gruppeForm, warnschwelle: zahlOderLeer(e.target.value) })}
+                />
+              </div>
+            </div>
+
+            <div className={styles.modalActions}>
+              {editGruppeId !== null && (
+                <button
+                  className={styles.btnSecondary}
+                  onClick={() => { setEditGruppeId(null); setGruppeForm({ name: '', sollBestand: '', warnschwelle: '' }); }}
+                >
+                  Neu statt bearbeiten
+                </button>
+              )}
+              <button className={styles.btnSecondary} onClick={() => setModal('none')}>Schliessen</button>
+              <button
+                className={styles.btnPrimary}
+                onClick={handleGruppeSubmit}
+                disabled={actionLoading || !gruppeForm.name.trim()}
+              >
+                {editGruppeId !== null ? 'Speichern' : 'Anlegen'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Inventur */}
       {modal === 'inventur' && (
         <div className={styles.modalOverlay} onClick={() => setModal('none')}>
@@ -1660,7 +1915,29 @@ export const Getraenke: React.FC = () => {
                   <option value="alkoholisch">Alkoholisch</option>
                 </select>
               </div>
+              <div className={styles.formGroup}>
+                <label>Oberkategorie</label>
+                <select
+                  value={sorteForm.oberkategorieId ?? ''}
+                  onChange={e => setSorteForm({
+                    ...sorteForm,
+                    oberkategorieId: e.target.value ? Number(e.target.value) : null,
+                  })}
+                >
+                  <option value="">— eigenständig —</option>
+                  {oberkategorien.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                </select>
+              </div>
             </div>
+
+            {sorteForm.oberkategorieId !== null && (
+              <p className={styles.mehrFelderHinweis}>
+                Diese Sorte zählt auf den Soll-Bestand der Oberkategorie ein und löst
+                selbst keine Nachbestellung aus – genau richtig für ein Bier, das nur mal
+                zum Probieren im Keller steht. Soll sie zusätzlich einzeln überwacht
+                werden, trag unten einen eigenen Soll-Bestand ein.
+              </p>
+            )}
 
             <div className={styles.formGroup}>
               <label>Gebinde</label>
@@ -1700,7 +1977,9 @@ export const Getraenke: React.FC = () => {
 
               <p className={styles.mehrFelderHinweis}>
                 Alles hier ist freiwillig. Leer heisst: Warnschwelle {SORTE_VORGABEN.warnschwelle},
-                Soll-Bestand {SORTE_VORGABEN.sollBestand} Kästen, Preise noch offen. Der
+                Soll-Bestand {sorteForm.oberkategorieId !== null
+                  ? '0 – die Oberkategorie übernimmt das'
+                  : `${SORTE_VORGABEN.sollBestand} Kästen`}, Preise noch offen. Der
                 Einkaufspreis trägt sich beim ersten Einbuchen von selbst nach.
               </p>
 

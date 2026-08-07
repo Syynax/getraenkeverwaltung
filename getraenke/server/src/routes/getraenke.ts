@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { body, param, query, validationResult } from 'express-validator';
-import type { GetraenkeData, Sorte, Bestand, Buchung, BesonderesEvent, EventPosition } from '../types/getraenke';
+import type { GetraenkeData, Sorte, Bestand, Buchung, BesonderesEvent, EventPosition, Oberkategorie } from '../types/getraenke';
 import { KATEGORIEN, BUCHUNGS_TYPEN_NEU, BUCHUNGS_STANDORTE_NEU, EVENT_STATI, EVENT_POSITION_TYPEN } from '../constants/getraenke';
 import { withFileLock, loadJsonFile, saveJsonFile } from '../utils/fileStore';
 import { erzeugeBremse, sperrText } from '../utils/bremse';
@@ -11,6 +11,10 @@ import {
   verbrauchProMonat,
   kassenbericht as berechneKassenbericht,
   bestandsAenderung,
+  ermittleBedarf,
+  gruppenBestand,
+  gruppenBestandFuerSoll,
+  gruppeUnterWarnschwelle,
   SORTE_VORGABEN,
 } from '../domain/berechnung';
 import { lookupProdukt, findeSortenVorschlag, type ProduktInfo } from '../services/produktLookup';
@@ -41,8 +45,14 @@ async function loadData(): Promise<GetraenkeData> {
     bestand: data.bestand || [],
     buchungen: data.buchungen || [],
     events: data.events || [],
+    // Datenbestände von vor 1.6.0 kennen noch keine Oberkategorien.
+    oberkategorien: data.oberkategorien || [],
   };
 }
+
+/** Lagerstand einer Sorte in Flaschen – als Nachschlagefunktion für die Domäne. */
+const lagerNachschlag = (data: GetraenkeData) => (sorteId: number): number =>
+  data.bestand.find(b => b.sorteId === sorteId)?.lager ?? 0;
 
 async function saveData(data: GetraenkeData): Promise<void> {
   await saveJsonFile(DATA_PATH, data);
@@ -131,6 +141,18 @@ function normalizeEventItems(items: unknown[], sorten: Sorte[]): EventPosition[]
  * Vorgaben aus der Domäne; der Einkaufspreis trägt sich beim ersten Eingang
  * ohnehin selbst nach.
  */
+/**
+ * Zuordnung zu einer Oberkategorie prüfen. Eine unbekannte oder inaktive Gruppe
+ * wird zu „keine" – lieber eine eigenständige Sorte als eine ins Leere zeigende
+ * Zuordnung, die dann still aus jeder Bedarfsrechnung fällt.
+ */
+const gruppeOder = (wert: unknown, gruppen: Oberkategorie[]): number | null => {
+  if (wert === undefined || wert === null || wert === '') return null;
+  const id = Number(wert);
+  if (!Number.isFinite(id)) return null;
+  return gruppen.some(g => g.id === id && g.aktiv) ? id : null;
+};
+
 const zahlOder = (wert: unknown, vorgabe: number): number => {
   if (wert === undefined || wert === null || wert === '') return vorgabe;
   const zahl = Number(wert);
@@ -146,6 +168,9 @@ const sorteValidation = [
     .trim()
     .notEmpty().withMessage('Kategorie ist erforderlich')
     .isIn([...KATEGORIEN]).withMessage('Ungültige Kategorie'),
+  body('oberkategorieId')
+    .optional({ values: 'null' })
+    .isInt({ min: 1 }).withMessage('Ungültige Oberkategorie'),
   body('flaschenProKasten')
     .isInt({ min: 1, max: 100 }).withMessage('Flaschen pro Kasten muss 1-100 sein'),
   body('warnschwelle')
@@ -255,6 +280,149 @@ const eventValidation = [
 ];
 
 // ===========================
+// OBERKATEGORIEN
+// ===========================
+
+const oberkategorieValidation = [
+  body('name')
+    .trim()
+    .notEmpty().withMessage('Name ist erforderlich')
+    .isLength({ min: 1, max: 60 }).withMessage('Name muss 1-60 Zeichen haben'),
+  body('sollBestand')
+    .optional({ values: 'falsy' })
+    .isInt({ min: 0, max: 500 }).withMessage('Soll-Bestand muss 0-500 sein'),
+  body('warnschwelle')
+    .optional({ values: 'falsy' })
+    .isInt({ min: 0, max: 500 }).withMessage('Warnschwelle muss 0-500 sein'),
+];
+
+// GET /oberkategorien - mit Bestand und Sortenzahl
+router.get('/oberkategorien', async (_req: Request, res: Response) => {
+  try {
+    const data = await loadData();
+    const lager = lagerNachschlag(data);
+
+    res.json(data.oberkategorien.filter(g => g.aktiv).map(gruppe => ({
+      ...gruppe,
+      sortenAnzahl: data.sorten.filter(s => s.aktiv && s.oberkategorieId === gruppe.id).length,
+      /** Alles, was in der Gruppe steht – die Zahl fürs Regal. */
+      aktuellerBestand: gruppenBestand(gruppe.id, data.sorten, lager),
+      /** Nur die Sorten ohne eigenen Soll – die Zahl, an der sich der Bedarf misst. */
+      bestandFuerSoll: gruppenBestandFuerSoll(gruppe.id, data.sorten, lager),
+      unterWarnschwelle: gruppeUnterWarnschwelle(gruppe, data.sorten, lager),
+    })));
+  } catch (err) {
+    console.error('Fehler beim Laden der Oberkategorien:', err);
+    res.status(500).json({ error: 'Serverfehler beim Laden der Oberkategorien' });
+  }
+});
+
+// POST /oberkategorien - neue Gruppe anlegen
+router.post('/oberkategorien', [...oberkategorieValidation, handleValidation], async (req: Request, res: Response) => {
+  try {
+    const neu = await withFileLock(DATA_PATH, async () => {
+      const data = await loadData();
+      const name = req.body.name.trim();
+
+      if (data.oberkategorien.some(g => g.aktiv && g.name.toLowerCase() === name.toLowerCase())) {
+        throw Object.assign(new Error(`Es gibt schon eine Oberkategorie „${name}".`), { status: 400 });
+      }
+
+      const gruppe: Oberkategorie = {
+        id: nextId(data.oberkategorien),
+        name,
+        sollBestand: zahlOder(req.body.sollBestand, 0),
+        warnschwelle: zahlOder(req.body.warnschwelle, 0),
+        aktiv: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      data.oberkategorien.push(gruppe);
+      await saveData(data);
+      return gruppe;
+    });
+
+    res.status(201).json(neu);
+  } catch (err: unknown) {
+    const error = err as { status?: number; message?: string };
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Fehler beim Anlegen der Oberkategorie:', err);
+    res.status(500).json({ error: 'Serverfehler beim Anlegen der Oberkategorie' });
+  }
+});
+
+// PUT /oberkategorien/:id - Gruppe bearbeiten
+router.put('/oberkategorien/:id', [param('id').isInt(), ...oberkategorieValidation, handleValidation], async (req: Request, res: Response) => {
+  try {
+    const geaendert = await withFileLock(DATA_PATH, async () => {
+      const data = await loadData();
+      const id = parseInt(req.params.id);
+      const idx = data.oberkategorien.findIndex(g => g.id === id);
+
+      if (idx === -1) throw Object.assign(new Error('Oberkategorie nicht gefunden'), { status: 404 });
+
+      const bisher = data.oberkategorien[idx];
+      data.oberkategorien[idx] = {
+        ...bisher,
+        name: req.body.name.trim(),
+        sollBestand: zahlOder(req.body.sollBestand, bisher.sollBestand),
+        warnschwelle: zahlOder(req.body.warnschwelle, bisher.warnschwelle),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await saveData(data);
+      return data.oberkategorien[idx];
+    });
+
+    res.json(geaendert);
+  } catch (err: unknown) {
+    const error = err as { status?: number; message?: string };
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Fehler beim Bearbeiten der Oberkategorie:', err);
+    res.status(500).json({ error: 'Serverfehler beim Bearbeiten der Oberkategorie' });
+  }
+});
+
+/**
+ * DELETE /oberkategorien/:id
+ * Deaktiviert die Gruppe und löst die Zuordnung der Sorten. Die Sorten selbst
+ * bleiben mit ihrem Bestand bestehen – entfernt wird nur die Klammer.
+ */
+router.delete('/oberkategorien/:id', [param('id').isInt(), handleValidation], async (req: Request, res: Response) => {
+  try {
+    const ergebnis = await withFileLock(DATA_PATH, async () => {
+      const data = await loadData();
+      const id = parseInt(req.params.id);
+      const gruppe = data.oberkategorien.find(g => g.id === id);
+
+      if (!gruppe) throw Object.assign(new Error('Oberkategorie nicht gefunden'), { status: 404 });
+
+      let geloest = 0;
+      for (const sorte of data.sorten) {
+        if (sorte.oberkategorieId === id) {
+          sorte.oberkategorieId = null;
+          geloest++;
+        }
+      }
+
+      gruppe.aktiv = false;
+      gruppe.updatedAt = new Date().toISOString();
+
+      await saveData(data);
+      return { message: 'Oberkategorie entfernt', geloesteSorten: geloest };
+    });
+
+    res.json(ergebnis);
+  } catch (err: unknown) {
+    const error = err as { status?: number; message?: string };
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Fehler beim Löschen der Oberkategorie:', err);
+    res.status(500).json({ error: 'Serverfehler beim Löschen der Oberkategorie' });
+  }
+});
+
+// ===========================
 // SORTEN
 // ===========================
 
@@ -275,15 +443,20 @@ router.post('/sorten', [...sorteValidation, handleValidation], async (req: Reque
   try {
     const neueSorte = await withFileLock(DATA_PATH, async () => {
       const data = await loadData();
+      const gruppeId = gruppeOder(req.body.oberkategorieId, data.oberkategorien);
       const created: Sorte = {
         id: nextId(data.sorten),
         name: req.body.name.trim(),
         kategorie: req.body.kategorie,
+        oberkategorieId: gruppeId,
         flaschenProKasten: req.body.flaschenProKasten,
         warnschwelle: zahlOder(req.body.warnschwelle, SORTE_VORGABEN.warnschwelle),
         einkaufspreis: zahlOder(req.body.einkaufspreis, SORTE_VORGABEN.einkaufspreis),
         verkaufspreis: zahlOder(req.body.verkaufspreis, SORTE_VORGABEN.verkaufspreis),
-        sollBestand: zahlOder(req.body.sollBestand, SORTE_VORGABEN.sollBestand),
+        // Steckt die Sorte in einer Oberkategorie, ist 0 die richtige Vorgabe:
+        // Sie soll dann auf den Soll der Gruppe einzahlen und keine eigene
+        // Nachbestellung auslösen. Wer doch einen eigenen Soll will, trägt ihn ein.
+        sollBestand: zahlOder(req.body.sollBestand, gruppeId != null ? 0 : SORTE_VORGABEN.sollBestand),
         barcodes: normalizeBarcodes(req.body.barcodes),
         aktiv: true,
         createdAt: new Date().toISOString(),
@@ -322,6 +495,7 @@ router.put('/sorten/:id', [param('id').isInt(), ...sorteValidation, handleValida
         ...bisher,
         name: req.body.name.trim(),
         kategorie: req.body.kategorie,
+        oberkategorieId: gruppeOder(req.body.oberkategorieId, data.oberkategorien),
         flaschenProKasten: req.body.flaschenProKasten,
         warnschwelle: zahlOder(req.body.warnschwelle, bisher.warnschwelle),
         einkaufspreis: zahlOder(req.body.einkaufspreis, bisher.einkaufspreis),
@@ -528,11 +702,16 @@ router.get('/bestand', async (_req: Request, res: Response) => {
 
     const bestandMitSorten = aktiveSorten.map(sorte => {
       const b = data.bestand.find(b => b.sorteId === sorte.id) || { sorteId: sorte.id, lager: 0 };
+      const gruppe = sorte.oberkategorieId != null
+        ? data.oberkategorien.find(g => g.id === sorte.oberkategorieId && g.aktiv)
+        : undefined;
       return {
         ...b,
         sorte,
         gesamt: b.lager,
         unterWarnschwelle: unterWarnschwelle(sorte, b.lager),
+        // Zum Gruppieren in der Oberfläche – erspart einen zweiten Abgleich dort.
+        oberkategorieName: gruppe?.name ?? null,
       };
     });
 
@@ -842,18 +1021,10 @@ router.get('/einkaufsliste', async (_req: Request, res: Response) => {
     const data = await loadData();
     const aktiveSorten = data.sorten.filter(s => s.aktiv);
 
-    const liste = aktiveSorten
-      .map(sorte => {
-        const b = data.bestand.find(b => b.sorteId === sorte.id) || { sorteId: sorte.id, lager: 0 };
-        return {
-          sorte,
-          aktuellerBestand: b.lager / sorte.flaschenProKasten,
-          empfohleneBestellung: empfohleneBestellung(sorte, b.lager),
-        };
-      })
-      .filter(e => e.empfohleneBestellung > 0);
-
-    res.json(liste);
+    // Sorten mit eigenem Soll einzeln, Sorten ohne eigenen Soll über ihre
+    // Oberkategorie – siehe ermittleBedarf().
+    const bedarf = ermittleBedarf(aktiveSorten, lagerNachschlag(data), data.oberkategorien);
+    res.json(bedarf);
   } catch (err) {
     console.error('Fehler beim Laden der Einkaufsliste:', err);
     res.status(500).json({ error: 'Serverfehler beim Laden der Einkaufsliste' });

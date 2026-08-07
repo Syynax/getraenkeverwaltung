@@ -11,7 +11,7 @@ Rest der Statistik läuft.
 
 | Tab | Inhalt |
 | --- | --- |
-| **Bestand** | Kästen pro Sorte im Lager, Schnellbuchung ±1 Kasten, Einkaufsliste mit Bestellempfehlung |
+| **Bestand** | Kästen pro Sorte im Lager, nach Oberkategorien gruppiert, Schnellbuchung ±1 Kasten, Einkaufsliste mit Bestellempfehlung |
 | **Einkauf** | Kompletten Einkauf mit Menge und Preis je Kasten auf einmal ins Lager buchen |
 | **Scannen** | Flaschen-Barcode scannen → 1 Kasten ins Lager. Wahlweise mit einem Handy als gekoppeltem Scanner; unbekannte Codes werden in einer offenen Produktdatenbank nachgeschlagen |
 | **Events** | Sommerfest & Co. mit eigener Einkaufsliste (Getränkesorten + freie Artikel), druckbar |
@@ -138,4 +138,4 @@ in einem Cookie – der Ingress-Pfad wechselt, ein Cookie-Path liefe ins Leere.
 
 ## Änderungen
 
-Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.5.0**.
+Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.6.0**.

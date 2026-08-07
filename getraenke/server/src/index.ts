@@ -138,6 +138,7 @@ app.get('/api/export', requireAuth, async (_req, res) => {
       bestand: data.bestand || [],
       buchungen: data.buchungen || [],
       events: data.events || [],
+      oberkategorien: data.oberkategorien || [],
     });
   } catch (err) {
     console.error('Fehler beim Export:', err);
@@ -157,7 +158,7 @@ app.post('/api/import', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Ungültige Datei: Es wird ein JSON-Objekt erwartet.' });
   }
 
-  const felder = ['sorten', 'bestand', 'buchungen', 'events'] as const;
+  const felder = ['sorten', 'bestand', 'buchungen', 'events', 'oberkategorien'] as const;
   for (const feld of felder) {
     const wert = payload[feld];
     if (wert !== undefined && !Array.isArray(wert)) {
@@ -177,6 +178,8 @@ app.post('/api/import', requireAuth, async (req, res) => {
     bestand: (payload.bestand || []) as unknown as AltDaten['bestand'],
     buchungen: payload.buchungen || [],
     events: payload.events || [],
+    // Sicherungen von vor 1.6.0 haben noch keine Oberkategorien.
+    oberkategorien: payload.oberkategorien || [],
   };
   const daten = entferneAutomatFelder(roh) as unknown as GetraenkeData;
 

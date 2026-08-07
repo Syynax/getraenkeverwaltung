@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Sorte, BestandMitSorte, Buchung, SorteFormData, BuchungFormData, BesonderesEvent, BesonderesEventFormData, EinkaufslistenEintrag, VerbrauchsStatistik, Kassenbericht, InventurZeile, InventurErgebnis } from '../types/getraenke';
+import type { Sorte, BestandMitSorte, Buchung, SorteFormData, BuchungFormData, BesonderesEvent, BesonderesEventFormData, Einkaufsliste, VerbrauchsStatistik, Kassenbericht, InventurZeile, InventurErgebnis, OberkategorieMitBestand, OberkategorieFormData } from '../types/getraenke';
 import {
   getSorten,
   createSorte as apiCreateSorte,
@@ -18,6 +18,10 @@ import {
   getKassenbericht,
   storniereBuchung,
   bucheInventur,
+  getOberkategorien,
+  createOberkategorie as apiCreateOberkategorie,
+  updateOberkategorie as apiUpdateOberkategorie,
+  deleteOberkategorie as apiDeleteOberkategorie,
 } from '../services/api';
 
 export interface EinkaufBuchung {
@@ -30,7 +34,8 @@ interface UseGetraenkeReturn {
   sorten: Sorte[];
   bestand: BestandMitSorte[];
   buchungen: (Buchung & { sorteName: string })[];
-  einkaufsliste: EinkaufslistenEintrag[];
+  einkaufsliste: Einkaufsliste;
+  oberkategorien: OberkategorieMitBestand[];
   events: BesonderesEvent[];
   statistik: VerbrauchsStatistik | null;
   kassenbericht: Kassenbericht | null;
@@ -48,13 +53,18 @@ interface UseGetraenkeReturn {
   createEvent: (data: BesonderesEventFormData) => Promise<void>;
   updateEvent: (id: number, data: BesonderesEventFormData) => Promise<void>;
   deleteEvent: (id: number) => Promise<void>;
+  createOberkategorie: (data: OberkategorieFormData) => Promise<void>;
+  updateOberkategorie: (id: number, data: OberkategorieFormData) => Promise<void>;
+  /** Gibt zurück, wie viele Sorten dabei aus der Gruppe gelöst wurden. */
+  deleteOberkategorie: (id: number) => Promise<number>;
 }
 
 export const useGetraenke = (): UseGetraenkeReturn => {
   const [sorten, setSorten] = useState<Sorte[]>([]);
   const [bestand, setBestandState] = useState<BestandMitSorte[]>([]);
   const [buchungen, setBuchungen] = useState<(Buchung & { sorteName: string })[]>([]);
-  const [einkaufsliste, setEinkaufsliste] = useState<EinkaufslistenEintrag[]>([]);
+  const [einkaufsliste, setEinkaufsliste] = useState<Einkaufsliste>({ sorten: [], gruppen: [] });
+  const [oberkategorien, setOberkategorien] = useState<OberkategorieMitBestand[]>([]);
   const [events, setEvents] = useState<BesonderesEvent[]>([]);
   const [statistik, setStatistik] = useState<VerbrauchsStatistik | null>(null);
   const [kassenbericht, setKassenbericht] = useState<Kassenbericht | null>(null);
@@ -67,7 +77,7 @@ export const useGetraenke = (): UseGetraenkeReturn => {
     try {
       if (!silent) setLoading(true);
       setError(null);
-      const [sortenData, bestandData, buchungenData, einkaufsData, eventsData, statistikData, kassenberichtData] = await Promise.all([
+      const [sortenData, bestandData, buchungenData, einkaufsData, eventsData, statistikData, kassenberichtData, gruppenData] = await Promise.all([
         getSorten(signal),
         getBestand(signal),
         getBuchungen(undefined, 50, signal),
@@ -75,6 +85,7 @@ export const useGetraenke = (): UseGetraenkeReturn => {
         getEvents(signal),
         getVerbrauchsstatistik(signal),
         getKassenbericht(signal),
+        getOberkategorien(signal),
       ]);
       setSorten(sortenData);
       setBestandState(bestandData);
@@ -83,6 +94,7 @@ export const useGetraenke = (): UseGetraenkeReturn => {
       setEvents(eventsData);
       setStatistik(statistikData);
       setKassenbericht(kassenberichtData);
+      setOberkategorien(gruppenData);
     } catch (err) {
       if (err instanceof Error && err.name === 'CanceledError') return;
       setError(err instanceof Error ? err.message : 'Fehler beim Laden der Getränkedaten');
@@ -134,6 +146,22 @@ export const useGetraenke = (): UseGetraenkeReturn => {
     await fetchAll(undefined, true);
   }, [fetchAll]);
 
+  const createOberkategorie = useCallback(async (data: OberkategorieFormData) => {
+    await apiCreateOberkategorie(data);
+    await fetchAll(undefined, true);
+  }, [fetchAll]);
+
+  const updateOberkategorie = useCallback(async (id: number, data: OberkategorieFormData) => {
+    await apiUpdateOberkategorie(id, data);
+    await fetchAll(undefined, true);
+  }, [fetchAll]);
+
+  const deleteOberkategorie = useCallback(async (id: number) => {
+    const { geloesteSorten } = await apiDeleteOberkategorie(id);
+    await fetchAll(undefined, true);
+    return geloesteSorten;
+  }, [fetchAll]);
+
   const stornieren = useCallback(async (id: number) => {
     await storniereBuchung(id);
     // Storno berührt Bestand, Verlauf und Kasse – alles frisch holen.
@@ -183,6 +211,7 @@ export const useGetraenke = (): UseGetraenkeReturn => {
     bestand,
     buchungen,
     einkaufsliste,
+    oberkategorien,
     events,
     statistik,
     kassenbericht,
@@ -200,5 +229,8 @@ export const useGetraenke = (): UseGetraenkeReturn => {
     createEvent,
     updateEvent,
     deleteEvent,
+    createOberkategorie,
+    updateOberkategorie,
+    deleteOberkategorie,
   };
 };

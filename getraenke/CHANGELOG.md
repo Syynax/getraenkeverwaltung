@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.6.0
+
+### Oberkategorien
+
+- **Mehrere Marken laufen jetzt unter einem Dach**: „Bier" über Augustiner,
+  Tegernseer und was gerade zum Probieren dasteht. Jede Marke bleibt eine eigene
+  Sorte mit eigenen Barcodes, eigenem Preis und eigenem Bestand
+- **Der Soll-Bestand gilt für die Gruppe.** Nachbestellt wird, wenn insgesamt zu
+  wenig da ist – nicht sobald eine einzelne Marke leer ist. Ein Sixpack, das
+  einmal zum Probieren gekauft wurde, steht damit nicht ewig auf der Einkaufsliste
+- Verwaltung unter **Bestand → Oberkategorien**, Zuordnung im Sortenformular
+- **Der Lagerbestand ist nach Oberkategorie gruppiert**, mit Summe je Gruppe
+- Die Einkaufsliste zeigt eine Zeile je Gruppe statt einer je Marke, mit den
+  zugehörigen Marken als Hinweis – gekauft wird eine davon
+- Eine Sorte mit **eigenem** Soll-Bestand bleibt einzeln und zählt nicht auf die
+  Gruppe; sonst käme sie doppelt in den Einkauf
+- Wird beim Anlegen eine Oberkategorie gewählt und der Soll-Bestand leer
+  gelassen, ist die Vorgabe **0** statt 4 – die Sorte zahlt dann auf die Gruppe ein
+- Eine Oberkategorie zu entfernen löst nur die Klammer; die Sorten bleiben samt
+  Bestand und Buchungen erhalten
+- Sicherungen von vor 1.6.0 lassen sich unverändert importieren
+
 ## 1.5.0
 
 ### Die Daten sind sicherer
