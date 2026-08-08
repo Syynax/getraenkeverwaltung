@@ -75,6 +75,8 @@ export interface Buchung {
   storniert?: boolean;
   storniertAm?: string;
   storniertVon?: string;
+  /** Aus einem abgeschlossenen Jahr – nur lesbar, kein Storno mehr möglich. */
+  archiviert?: boolean;
 }
 
 export interface EventPosition {

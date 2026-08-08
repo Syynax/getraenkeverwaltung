@@ -33,10 +33,17 @@ const tagesStempel = (): string => new Date().toISOString().slice(0, 10);
  * Legt die Sicherung des Tages an, falls sie noch fehlt.
  * Gibt den Pfad zurück, oder null wenn heute schon eine existiert.
  */
-export async function sichereTaeglich(datenDatei: string, behalten: number): Promise<string | null> {
+export async function sichereTaeglich(
+  datenDatei: string,
+  behalten: number,
+  inhaltGeber?: () => Promise<string>,
+): Promise<string | null> {
   let inhalt: string;
   try {
-    inhalt = await fs.readFile(datenDatei, 'utf-8');
+    // Der Aufrufer kann einen vollständigeren Stand liefern als die blosse
+    // Datei – nötig, seit abgeschlossene Jahre im Archiv liegen. Eine
+    // Sicherung ohne Historie wäre eine Falle.
+    inhalt = inhaltGeber ? await inhaltGeber() : await fs.readFile(datenDatei, 'utf-8');
   } catch {
     // Noch keine Daten – dann gibt es auch nichts zu sichern.
     return null;
@@ -110,9 +117,13 @@ export async function raeumeImportSicherungen(datenDatei: string, behalten: numb
 }
 
 /** Startet die tägliche Sicherung und gibt eine Funktion zum Stoppen zurück. */
-export function starteSicherungsTakt(datenDatei: string, behalten: number): () => void {
+export function starteSicherungsTakt(
+  datenDatei: string,
+  behalten: number,
+  inhaltGeber?: () => Promise<string>,
+): () => void {
   const lauf = () => {
-    void sichereTaeglich(datenDatei, behalten)
+    void sichereTaeglich(datenDatei, behalten, inhaltGeber)
       .then(pfad => { if (pfad) console.log(`💾 Sicherung angelegt: ${pfad}`); })
       .catch(err => console.warn('Automatische Sicherung fehlgeschlagen:', err));
   };

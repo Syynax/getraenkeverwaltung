@@ -7,6 +7,7 @@ import path from 'path';
 import getraenkeRouter from './routes/getraenke';
 import { withFileLock, loadJsonFile, saveJsonFile, DatenDefektError, laufendeSchreibvorgaenge, raeumeAbbruchReste } from './utils/fileStore';
 import { starteSicherungsTakt, raeumeImportSicherungen, sicherungsOrdner } from './utils/sicherung';
+import { archiviereAbgeschlosseneJahre, ladeAlleBuchungen, leereArchiv } from './utils/archiv';
 import { migriereAutomatWeg, entferneAutomatFelder, type AltDaten } from './utils/migration';
 import type { GetraenkeData } from './types/getraenke';
 import {
@@ -133,10 +134,11 @@ app.get('/api/export', requireAuth, async (_req, res) => {
     const data = await loadJsonFile<Partial<GetraenkeData>>(DATA_FILE, {});
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Disposition', `attachment; filename="getraenke-${stamp}.json"`);
+    // Mit dem Archiv – sonst fehlte einem Umzug die halbe Historie.
     res.json({
       sorten: data.sorten || [],
       bestand: data.bestand || [],
-      buchungen: data.buchungen || [],
+      buchungen: await ladeAlleBuchungen(DATA_FILE, data.buchungen || []),
       events: data.events || [],
       oberkategorien: data.oberkategorien || [],
     });
@@ -191,6 +193,11 @@ app.post('/api/import', requireAuth, async (req, res) => {
         await saveJsonFile(backup, bisher);
       }
       await saveJsonFile(DATA_FILE, daten);
+
+      // Das alte Archiv muss weg: Die eingespielte Sicherung enthält bereits
+      // alle Buchungen. Bliebe es liegen, zählte der Kassenbericht doppelt.
+      const geleert = await leereArchiv(DATA_FILE);
+      if (geleert > 0) console.log(`📦 ${geleert} Archivdatei(en) durch den Import ersetzt.`);
     });
 
     res.json({
@@ -239,7 +246,7 @@ async function pruefeDatenbestand(): Promise<void> {
     }
     console.log(
       `📄 Datenbestand: ${daten.sorten?.length ?? 0} Sorten, ` +
-      `${daten.bestand?.length ?? 0} Bestände, ${daten.buchungen?.length ?? 0} Buchungen, ` +
+      `${daten.bestand?.length ?? 0} Bestände, ${daten.buchungen?.length ?? 0} Buchungen (laufend), ` +
       `${daten.events?.length ?? 0} Events`,
     );
   } catch (err) {
@@ -253,6 +260,22 @@ async function pruefeDatenbestand(): Promise<void> {
     }
     throw err;
   }
+}
+
+/**
+ * Der komplette Datenbestand als JSON – laufende Datei plus Archiv.
+ * Genau das, was Export und Sicherung liefern müssen, damit eine
+ * Wiederherstellung alles zurückbringt.
+ */
+async function vollstaendigerStand(): Promise<string> {
+  const daten = await loadJsonFile<Partial<GetraenkeData>>(DATA_FILE, {});
+  return JSON.stringify({
+    sorten: daten.sorten || [],
+    bestand: daten.bestand || [],
+    buchungen: await ladeAlleBuchungen(DATA_FILE, daten.buchungen || []),
+    events: daten.events || [],
+    oberkategorien: daten.oberkategorien || [],
+  }, null, 2);
 }
 
 async function start() {
@@ -271,9 +294,24 @@ async function start() {
   // nach dem Update; danach findet sie nichts mehr zu tun.
   await migriereAutomatWeg(DATA_FILE);
 
+  // Abgeschlossene Jahre auslagern, damit die laufende Datei klein bleibt.
+  // Jede Buchung schreibt sie komplett neu – Altlasten kosten damit bei jedem
+  // Klick Schreibzugriffe.
+  try {
+    const { jahre, verschoben } = await archiviereAbgeschlosseneJahre(DATA_FILE, new Date().getFullYear());
+    if (verschoben > 0) {
+      console.log(`📦 ${verschoben} Buchungen aus ${jahre.join(', ')} ins Archiv verschoben.`);
+    }
+  } catch (err) {
+    // Das Archivieren ist Hausputz – es darf den Start nicht verhindern.
+    console.warn('Archivieren übersprungen:', err instanceof Error ? err.message : err);
+  }
+
   let stoppeSicherung: (() => void) | null = null;
   if (AUTOMATISCHE_SICHERUNG) {
-    stoppeSicherung = starteSicherungsTakt(DATA_FILE, SICHERUNGEN_BEHALTEN);
+    // Mit Archiv sichern: Eine Sicherung, die nur das laufende Jahr enthält,
+    // wäre beim Wiederherstellen eine böse Überraschung.
+    stoppeSicherung = starteSicherungsTakt(DATA_FILE, SICHERUNGEN_BEHALTEN, vollstaendigerStand);
     const geloescht = await raeumeImportSicherungen(DATA_FILE, SICHERUNGEN_BEHALTEN);
     if (geloescht > 0) console.log(`🧹 ${geloescht} alte Import-Sicherungen entfernt`);
   }

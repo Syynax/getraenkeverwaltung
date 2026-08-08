@@ -190,6 +190,23 @@ Damit das auch bei einem Stromausfall hält, ist einiges eingebaut:
 - Beim Start steht im Protokoll, wie viele Sorten, Bestände und Buchungen
   geladen wurden – ein Blick genügt, um zu sehen, dass alles da ist.
 
+### Archiv abgeschlossener Jahre
+
+Buchungen sammeln sich über die Jahre, und **jede** Buchung schreibt die
+Datendatei komplett neu. Damit ein Klick auf „+1 Kasten" nicht irgendwann
+zehntausende Altzeilen mitschleppt, wandern abgeschlossene Jahre beim Start
+nach `/data/archiv/buchungen-JJJJ.json`.
+
+Für die Auswertung ändert sich nichts: Verlauf, Verbrauchsstatistik und
+Kassenbericht lesen das Archiv dazu und zeigen weiterhin alle Jahre. Auch
+**Sichern** und **Export** enthalten immer den vollständigen Bestand.
+
+Was nicht mehr geht: **Buchungen aus archivierten Jahren lassen sich nicht
+stornieren.** Sie sind im Verlauf mit *Archiv* gekennzeichnet und haben keinen
+Storno-Knopf. Eine abgeschlossene Kasse nachträglich zu verändern wäre ohnehin
+nicht das, was man will – für eine Korrektur im laufenden Jahr gibt es
+**Bestand korrigieren**.
+
 ### Kaputte Datei wiederherstellen
 
 1. Im **Protokoll** des Add-ons nachsehen, welche Datei betroffen ist
@@ -348,7 +365,9 @@ Schwund taucht im Kassenbericht als eigene Kachel auf: der Wert, der in der
 Kasse fehlt. In den Gewinn geht er nicht ein, denn es ist kein Geld geflossen.
 
 **Stornieren:** In **Auswertung → Letzte Buchungen** hat jede Zeile einen
-Rückwärtspfeil – auch Inventurbuchungen, wer sich beim Zählen vertut. Der dreht die Bestandswirkung zurück; die Buchung bleibt
+Rückwärtspfeil – auch Inventurbuchungen, wer sich beim Zählen vertut. Zeilen aus
+archivierten Jahren sind mit *Archiv* markiert und lassen sich nicht mehr
+stornieren. Der dreht die Bestandswirkung zurück; die Buchung bleibt
 durchgestrichen stehen und zählt nirgends mehr mit. Gelöscht wird nichts – eine
 Kassenprüfung soll sehen können, dass korrigiert wurde. Würde der Bestand durch
 den Storno negativ, wird er abgelehnt; dann ist die Ware zwischenzeitlich

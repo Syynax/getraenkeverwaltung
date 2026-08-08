@@ -1652,6 +1652,7 @@ export const Getraenke: React.FC = () => {
                     <td>{b.benutzer || '—'}</td>
                     <td>
                       {b.notiz || '—'}
+                      {b.archiviert && <span className={styles.archivHinweis}>Archiv</span>}
                       {b.storniert && (
                         <span className={styles.stornoHinweis}>
                           storniert{b.storniertVon ? ` von ${b.storniertVon}` : ''}
@@ -1660,8 +1661,9 @@ export const Getraenke: React.FC = () => {
                     </td>
                     <td>
                       {/* Auch eine Inventur ist stornierbar – wer sich beim
-                          Zählen vertut, muss das zurücknehmen können. */}
-                      {!b.storniert && (
+                          Zählen vertut, muss das zurücknehmen können. Nur
+                          archivierte Jahre sind zu. */}
+                      {!b.storniert && !b.archiviert && (
                         <button
                           className={styles.stornoBtn}
                           title="Diese Buchung stornieren"

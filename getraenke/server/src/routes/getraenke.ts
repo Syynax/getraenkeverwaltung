@@ -4,6 +4,7 @@ import type { GetraenkeData, Sorte, Bestand, Buchung, BesonderesEvent, EventPosi
 import { KATEGORIEN, BUCHUNGS_TYPEN_NEU, BUCHUNGS_STANDORTE_NEU, EVENT_STATI, EVENT_POSITION_TYPEN } from '../constants/getraenke';
 import { withFileLock, loadJsonFile, saveJsonFile } from '../utils/fileStore';
 import { erzeugeBremse, sperrText } from '../utils/bremse';
+import { ladeAlleBuchungen, ladeArchivBuchungen, findeImArchiv, hoechsteBuchungsId, jahrVon } from '../utils/archiv';
 import type { AuthRequest } from '../auth';
 import {
   empfohleneBestellung,
@@ -814,7 +815,9 @@ router.post('/buchen', [...buchungValidation, handleValidation], async (req: Req
       data.bestand[bestandIdx] = bestand;
 
       const buchung: Buchung = {
-        id: nextId(data.buchungen),
+        // Über das Archiv hinweg zählen: Sonst begänne die Nummerierung nach
+        // dem Auslagern eines Jahres von vorn und träfe alte Ids wieder.
+        id: (await hoechsteBuchungsId(DATA_PATH, data.buchungen)) + 1,
         sorteId,
         datum: new Date().toISOString(),
         typ,
@@ -858,6 +861,18 @@ router.post('/buchungen/:id/stornieren', [param('id').isInt(), handleValidation]
       const buchung = data.buchungen.find(b => b.id === id);
 
       if (!buchung) {
+        // Vor der 404 nachsehen, ob sie nur ausgelagert ist – sonst stünde da
+        // „nicht gefunden", obwohl die Buchung sehr wohl existiert.
+        const archiviert = await findeImArchiv(DATA_PATH, id);
+        if (archiviert) {
+          throw Object.assign(
+            new Error(
+              `Diese Buchung stammt aus ${jahrVon(archiviert) ?? 'einem früheren Jahr'} und liegt im Archiv. ` +
+              'Abgeschlossene Jahre lassen sich nicht mehr stornieren – bitte stattdessen den Bestand korrigieren.',
+            ),
+            { status: 400 },
+          );
+        }
         throw Object.assign(new Error('Buchung nicht gefunden'), { status: 404 });
       }
       if (buchung.storniert) {
@@ -931,6 +946,9 @@ router.post('/inventur', [
       const notiz = (req.body.notiz as string | undefined)?.trim() || null;
       const wer = benutzerVon(req);
       const jetzt = new Date().toISOString();
+      // Einmal ermitteln und selbst hochzählen – die Inventur legt mehrere
+      // Buchungen auf einen Schlag an.
+      let naechsteId = (await hoechsteBuchungsId(DATA_PATH, data.buchungen)) + 1;
 
       const abweichungen: { sorteId: number; sorteName: string; vorher: number; gezaehlt: number; differenz: number }[] = [];
 
@@ -950,7 +968,7 @@ router.post('/inventur', [
 
         data.bestand[idx].lager = zeile.flaschen;
         data.buchungen.push({
-          id: nextId(data.buchungen),
+          id: naechsteId++,
           sorteId: sorte.id,
           datum: jetzt,
           typ: 'inventur',
@@ -995,14 +1013,26 @@ router.get('/buchungen', [
 ], async (req: Request, res: Response) => {
   try {
     const data = await loadData();
-    let buchungen = [...data.buchungen].reverse(); // neueste zuerst
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+    const sorteId = req.query.sorteId ? parseInt(req.query.sorteId as string) : null;
 
-    if (req.query.sorteId) {
-      const sorteId = parseInt(req.query.sorteId as string);
-      buchungen = buchungen.filter(b => b.sorteId === sorteId);
+    const passend = (liste: Buchung[]) =>
+      (sorteId === null ? liste : liste.filter(b => b.sorteId === sorteId));
+
+    // `archiviert` sagt der Oberfläche, dass hier kein Storno mehr geht –
+    // sonst stünde dort ein Knopf, der zuverlässig scheitert.
+    let buchungen: (Buchung & { archiviert?: boolean })[] =
+      passend([...data.buchungen]).reverse(); // neueste zuerst
+
+    // Reichen die laufenden Buchungen nicht (etwa im Januar, kurz nachdem das
+    // Vorjahr ausgelagert wurde), das Archiv dazunehmen.
+    if (buchungen.length < limit) {
+      const archiv = passend(await ladeArchivBuchungen(DATA_PATH))
+        .reverse()
+        .map(b => ({ ...b, archiviert: true }));
+      buchungen = [...buchungen, ...archiv];
     }
 
-    const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
     buchungen = buchungen.slice(0, limit);
 
     // Sortennamen mitgeben
@@ -1156,13 +1186,15 @@ router.get('/statistik', async (_req: Request, res: Response) => {
   try {
     const data = await loadData();
 
-    const gesamt = verbrauchProMonat(data.buchungen);
+    // Über das Archiv hinweg, sonst brächen die Vorjahre aus der Statistik weg.
+    const alle = await ladeAlleBuchungen(DATA_PATH, data.buchungen);
+    const gesamt = verbrauchProMonat(alle);
 
     // Dieselbe Rechnung noch einmal je Sorte, damit sich einzelne Getränke
     // vergleichen lassen.
     const proSorteResult: Record<string, ReturnType<typeof verbrauchProMonat>> = {};
     for (const sorte of data.sorten) {
-      const eigene = data.buchungen.filter(b => b.sorteId === sorte.id);
+      const eigene = alle.filter(b => b.sorteId === sorte.id);
       if (eigene.length > 0) proSorteResult[sorte.name] = verbrauchProMonat(eigene);
     }
 
@@ -1182,7 +1214,8 @@ router.get('/kassenbericht', async (_req: Request, res: Response) => {
   try {
     const data = await loadData();
 
-    res.json(berechneKassenbericht(data.buchungen, data.sorten));
+    const alle = await ladeAlleBuchungen(DATA_PATH, data.buchungen);
+    res.json(berechneKassenbericht(alle, data.sorten));
   } catch (err) {
     console.error('Fehler beim Laden des Kassenberichts:', err);
     res.status(500).json({ error: 'Serverfehler beim Laden des Kassenberichts' });

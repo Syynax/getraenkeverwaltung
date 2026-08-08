@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.8.0
+
+### Buchungsarchiv
+
+Bisher wuchsen die Buchungen für immer in einer Datei – und jede einzelne
+Buchung schrieb sie komplett neu. Nach ein paar Jahren hätte jeder Klick auf
+„+1 Kasten" zehntausende Altzeilen erneut auf die Speicherkarte geschrieben.
+
+- **Abgeschlossene Jahre wandern beim Start nach `/data/archiv/buchungen-JJJJ.json`.**
+  Die Trennung ist überschneidungsfrei: Eine Buchung liegt entweder im Archiv
+  oder in der laufenden Datei
+- Verlauf, Verbrauchsstatistik und Kassenbericht lesen das Archiv dazu – für die
+  Auswertung ändert sich nichts, alle Jahre bleiben sichtbar
+- **Sichern und Export enthalten weiterhin den vollständigen Bestand**
+- Buchungsnummern zählen über das Archiv hinweg weiter, damit nach dem
+  Auslagern keine Nummer ein zweites Mal vergeben wird
+- Buchungen aus archivierten Jahren sind im Verlauf mit *Archiv* gekennzeichnet
+  und lassen sich nicht mehr stornieren; der Versuch über die Schnittstelle
+  erklärt auch, warum
+- Ein Import leert das Archiv, weil die eingespielte Sicherung bereits alle
+  Buchungen enthält
+
 ## 1.7.0
 
 ### Schneller

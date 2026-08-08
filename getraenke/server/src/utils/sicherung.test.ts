@@ -51,6 +51,30 @@ test('Eine leere Datei wird nicht gesichert', async () => {
   assert.equal(await sichereTaeglich(datei, 14), null);
 });
 
+test('Ein Inhaltsgeber sticht die blosse Datei', async () => {
+  // Seit abgeschlossene Jahre im Archiv liegen, enthält die laufende Datei
+  // nicht mehr die ganze Wahrheit. Die Sicherung muss den vollen Stand
+  // bekommen, sonst fehlt beim Wiederherstellen die Historie.
+  const datei = await mitDaten('{"buchungen":[{"id":3}]}');
+  const voll = '{"buchungen":[{"id":1},{"id":2},{"id":3}]}';
+
+  const pfad = await sichereTaeglich(datei, 14, async () => voll);
+  assert.ok(pfad);
+  assert.equal(await fs.readFile(pfad, 'utf-8'), voll);
+});
+
+test('Ein leerer Inhaltsgeber legt keine Sicherung an', async () => {
+  const datei = await mitDaten();
+  assert.equal(await sichereTaeglich(datei, 14, async () => '  '), null);
+});
+
+test('Wirft der Inhaltsgeber, bleibt die Sicherung aus statt halb', async () => {
+  const datei = await mitDaten();
+  const pfad = await sichereTaeglich(datei, 14, async () => { throw new Error('Archiv nicht lesbar'); });
+  assert.equal(pfad, null);
+  assert.deepEqual(await dateienIm(sicherungsOrdner(datei)), []);
+});
+
 test('Rotation behält die jüngsten Sicherungen', async () => {
   const datei = await mitDaten();
   const ordner = sicherungsOrdner(datei);
