@@ -140,4 +140,4 @@ in einem Cookie – der Ingress-Pfad wechselt, ein Cookie-Path liefe ins Leere.
 
 ## Änderungen
 
-Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.8.0**.
+Siehe **[getraenke/CHANGELOG.md](getraenke/CHANGELOG.md)**. Aktuell: **1.8.1**.

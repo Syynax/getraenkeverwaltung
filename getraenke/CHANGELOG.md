@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.1
+
+Reiner Umbau – an der Bedienung ändert sich nichts.
+
+- Die Getränkeseite lag als eine Datei mit 2374 Zeilen vor. Konstanten und
+  Hilfsfunktionen stehen jetzt in `hilfen.ts`, die sechs Dialoge in
+  `dialoge/` – jeder mit klaren Eingaben statt Zugriff auf den Zustand der
+  ganzen Seite
+- 23 ungenutzte CSS-Klassen entfernt, teils Altlasten aus der Automaten-Zeit
+
 ## 1.8.0
 
 ### Buchungsarchiv

@@ -1,5 +1,5 @@
 name: Getränkeverwaltung
-version: "1.8.0"
+version: "1.8.1"
 slug: getraenke
 description: Getränkebestand, Einkauf, Events und Kassenbericht für die Feuerwehr
 url: https://github.com/Syynax/getraenkeverwaltung/tree/main/getraenke

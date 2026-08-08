@@ -1,11 +1,24 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useGetraenke } from '../../hooks/useGetraenke';
 import { useScanKopplung } from '../../hooks/useScanKopplung';
-import { EVENT_STATI, EVENT_POSITION_TYPEN } from '../../constants/getraenke';
-import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, Kategorie, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData, InventurAbweichung, OberkategorieFormData, OberkategorieMitBestand } from '../../types/getraenke';
-import { GermanDateInput } from '../../components';
+import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData, InventurAbweichung, OberkategorieFormData, OberkategorieMitBestand } from '../../types/getraenke';
 import { lookupBarcode } from '../../services/api';
 import { ScanTab, type ScanFeedback, type OffenerCode } from './ScanTab';
+import {
+  MAX_OFFENE_CODES, SUB_TABS,
+  EVENT_STATUS_LABELS, EVENT_POSITION_LABELS,
+  leereSorte, gebindeAusMenge,
+  ladeEinkaufDraft, merkeEinkaufDraft,
+  formatBestand, formatDatum, formatEventDatum, formatMonat,
+  buchungTypLabel, mengeText, escapePrintHtml,
+  type ModalType, type SubTab, type EinkaufDraft, type BestandKorrekturState,
+} from './hilfen';
+import { BuchungDialog } from './dialoge/BuchungDialog';
+import { BestandKorrekturDialog } from './dialoge/BestandKorrekturDialog';
+import { OberkategorienDialog } from './dialoge/OberkategorienDialog';
+import { InventurDialog } from './dialoge/InventurDialog';
+import { SorteDialog } from './dialoge/SorteDialog';
+import { EventDialog } from './dialoge/EventDialog';
 import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -20,126 +33,7 @@ import styles from './Getraenke.module.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
-/**
- * Deckel für gleichzeitig offene unbekannte Codes. Darüber wird nichts mehr
- * angenommen – lieber eine ehrliche Meldung als eine Liste, die niemand mehr
- * abarbeitet, oder ein stilles Verwerfen älterer Einträge.
- */
-const MAX_OFFENE_CODES = 20;
-
-/** Übliche Gebindegrössen – deckt das meiste ab, daneben bleibt das freie Feld. */
-const GEBINDE: { wert: number; label: string }[] = [
-  { wert: 20, label: '20er' },
-  { wert: 24, label: '24er' },
-  { wert: 12, label: '12er' },
-  { wert: 11, label: '11er' },
-  { wert: 6, label: '6er' },
-];
-
-/**
- * Vorgaben des Servers, gespiegelt für die Platzhalter im Formular.
- * Leer gelassene Felder werden dort eingesetzt.
- */
-const SORTE_VORGABEN = { warnschwelle: 2, sollBestand: 4 } as const;
-
-/** Leeres Feld bleibt leer, statt zu 0 zu werden – sonst kann man nichts offenlassen. */
-const zahlOderLeer = (roh: string, komma = false): number | '' => {
-  if (roh.trim() === '') return '';
-  const zahl = komma ? parseFloat(roh) : parseInt(roh, 10);
-  return Number.isFinite(zahl) ? Math.max(0, zahl) : '';
-};
-
-type EinkaufDraft = Record<number, { menge: number; preis: number }>;
-
-/**
- * Einkaufsentwurf über einen Reload retten. sessionStorage statt localStorage:
- * Ein Einkauf gehört zu dieser Sitzung – ein Tab, der Wochen später aufgeht,
- * soll nicht mit einer alten Bestellung starten.
- */
-const EINKAUF_SCHLUESSEL = 'getraenke.einkaufDraft';
-
-const ladeEinkaufDraft = (): EinkaufDraft => {
-  try {
-    const roh = sessionStorage.getItem(EINKAUF_SCHLUESSEL);
-    if (!roh) return {};
-    const wert = JSON.parse(roh) as unknown;
-    if (!wert || typeof wert !== 'object' || Array.isArray(wert)) return {};
-
-    const sauber: EinkaufDraft = {};
-    for (const [id, zeile] of Object.entries(wert as Record<string, unknown>)) {
-      const sorteId = Number(id);
-      const z = zeile as { menge?: unknown; preis?: unknown };
-      if (!Number.isFinite(sorteId) || typeof z?.menge !== 'number' || typeof z?.preis !== 'number') continue;
-      sauber[sorteId] = { menge: Math.max(0, z.menge), preis: Math.max(0, z.preis) };
-    }
-    return sauber;
-  } catch {
-    return {};
-  }
-};
-
-const merkeEinkaufDraft = (draft: EinkaufDraft): void => {
-  try {
-    if (Object.keys(draft).length === 0) sessionStorage.removeItem(EINKAUF_SCHLUESSEL);
-    else sessionStorage.setItem(EINKAUF_SCHLUESSEL, JSON.stringify(draft));
-  } catch {
-    /* privater Modus o.ä. – dann gilt der Entwurf nur, solange die Seite offen ist */
-  }
-};
-
-const leereSorte = (): SorteFormData => ({
-  name: '',
-  kategorie: 'alkoholfrei',
-  oberkategorieId: null,
-  flaschenProKasten: 20,
-  warnschwelle: '',
-  einkaufspreis: '',
-  verkaufspreis: '',
-  sollBestand: '',
-  barcodes: [],
-});
-
-/**
- * Open Food Facts liefert die Menge als Freitext („0,5 l", „20 x 0.5 l"). Steht
- * dort eine Stückzahl, ist das die Gebindegrösse – sonst bleibt es beim Default.
- */
-const gebindeAusMenge = (menge: string | null | undefined): number | null => {
-  if (!menge) return null;
-  const treffer = menge.match(/(\d{1,3})\s*[x×]/i);
-  if (!treffer) return null;
-  const zahl = parseInt(treffer[1], 10);
-  return zahl >= 1 && zahl <= 100 ? zahl : null;
-};
-
-type ModalType = 'none' | 'neueSorte' | 'buchung' | 'bestandKorrektur' | 'event' | 'inventur' | 'oberkategorien';
-type SubTab = 'bestand' | 'einkauf' | 'scan' | 'events' | 'auswertung';
-
-const SUB_TABS: { id: SubTab; label: string; icon: string }[] = [
-  { id: 'bestand', label: 'Bestand', icon: 'fa-warehouse' },
-  { id: 'einkauf', label: 'Einkauf', icon: 'fa-cart-shopping' },
-  { id: 'scan', label: 'Scannen', icon: 'fa-barcode' },
-  { id: 'events', label: 'Events', icon: 'fa-calendar-days' },
-  { id: 'auswertung', label: 'Auswertung', icon: 'fa-chart-bar' },
-];
-
-const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
-  geplant: 'Geplant',
-  'in-bearbeitung': 'In Bearbeitung',
-  eingekauft: 'Eingekauft',
-  erledigt: 'Erledigt',
-  abgesagt: 'Abgesagt',
-};
-
-const EVENT_POSITION_LABELS: Record<EventPositionTyp, string> = {
-  sorte: 'Getränkesorte',
-  frei: 'Freier Artikel',
-};
-
-interface BestandKorrekturState {
-  sorteId: number;
-  sorteName: string;
-  lager: number;
-}
+// Konstanten und reine Hilfsfunktionen liegen in hilfen.ts – siehe Import oben.
 
 export const Getraenke: React.FC = () => {
   const {
@@ -389,16 +283,6 @@ export const Getraenke: React.FC = () => {
   [events]);
 
   // Einheitliche, klare Bestandsanzeige: "6 Kästen + 9 Fl" statt mehrdeutigem "6,9K".
-  const formatBestand = (flaschen: number, fpk: number) => {
-    if (fpk <= 0) return `${flaschen} Fl`;
-    const kaesten = Math.floor(flaschen / fpk);
-    const rest = flaschen % fpk;
-    const kastenLabel = kaesten === 1 ? 'Kasten' : 'Kästen';
-    if (kaesten > 0 && rest > 0) return `${kaesten} ${kastenLabel} + ${rest} Fl`;
-    if (kaesten > 0) return `${kaesten} ${kastenLabel}`;
-    return `${rest} Fl`;
-  };
-
   // --- Handlers ---
 
   const openNeueSorte = () => {
@@ -914,35 +798,6 @@ export const Getraenke: React.FC = () => {
     }
   };
 
-  const formatDatum = (datum: string) => {
-    return new Date(datum).toLocaleDateString('de-DE', {
-      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-  };
-
-  const formatEventDatum = (datum: string) => {
-    const datePart = datum.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
-      const [year, month, day] = datePart.split('-');
-      return `${day}.${month}.${year}`;
-    }
-
-    return new Date(datum).toLocaleDateString('de-DE', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-    });
-  };
-
-  const buchungTypLabel = (typ: string) => {
-    switch (typ) {
-      case 'eingang': return 'Eingang';
-      case 'ausgang': return 'Ausgang';
-      case 'schwund': return 'Schwund';
-      case 'inventur': return 'Inventur';
-      case 'auffuellung': return 'Auffüllung';
-      default: return typ;
-    }
-  };
-
   /**
    * Lagerbestand nach Oberkategorie gruppiert, eigenständige Sorten zuletzt.
    * So sieht man auf einen Blick, wie viel Bier insgesamt dasteht, ohne die
@@ -970,14 +825,6 @@ export const Getraenke: React.FC = () => {
     });
   }, [bestand, oberkategorien]);
 
-  /** Inventur und die alten Auffüllungen führen Flaschen, alles andere Kästen. */
-  const mengeText = (b: { typ: string; menge: number }) => {
-    if (b.typ === 'inventur') {
-      return `${b.menge > 0 ? '+' : ''}${b.menge} Fl.`;
-    }
-    return `${b.menge} ${b.typ === 'auffuellung' ? 'Fl.' : 'Kästen'}`;
-  };
-
   const handleStornieren = async (id: number, sorteName: string) => {
     if (!confirm(`Buchung für ${sorteName} stornieren?\n\nDer Bestand wird zurückgedreht. Die Buchung bleibt im Verlauf sichtbar.`)) {
       return;
@@ -991,12 +838,6 @@ export const Getraenke: React.FC = () => {
     } finally {
       setActionLoading(false);
     }
-  };
-
-  const formatMonat = (monat: string) => {
-    const [year, month] = monat.split('-');
-    const monate = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
-    return `${monate[parseInt(month) - 1]} ${year}`;
   };
 
   const getEventStatusClass = (status: EventStatus) => {
@@ -1021,13 +862,6 @@ export const Getraenke: React.FC = () => {
 
     return item.artikelName;
   };
-
-  const escapePrintHtml = (value: string) => value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
 
   const handlePrintEvent = (event: BesonderesEvent) => {
     const itemsMarkup = event.items.length === 0
@@ -1750,624 +1584,100 @@ export const Getraenke: React.FC = () => {
 
       {/* Oberkategorien verwalten */}
       {modal === 'oberkategorien' && (
-        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
-          <div className={`${styles.modal} ${styles.modalLarge}`} onClick={e => e.stopPropagation()}>
-            <h2>Oberkategorien</h2>
-            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-
-            <p className={styles.mehrFelderHinweis}>
-              Eine Oberkategorie fasst mehrere Marken zusammen – etwa „Bier" über Augustiner,
-              Tegernseer und was gerade zum Probieren dasteht. Der Soll-Bestand gilt für die
-              Gruppe als Ganzes: Nachbestellt wird, wenn insgesamt zu wenig da ist, nicht
-              sobald eine einzelne Marke leer ist.
-            </p>
-
-            {oberkategorien.length > 0 && (
-              <div className={styles.inventurListe}>
-                {oberkategorien.map(g => (
-                  <div key={g.id} className={styles.inventurZeile}>
-                    <div className={styles.inventurName}>
-                      <strong>{g.name}</strong>
-                      <span className={styles.einkaufMeta}>
-                        {g.sortenAnzahl} Sorte{g.sortenAnzahl === 1 ? '' : 'n'} ·{' '}
-                        {g.aktuellerBestand.toFixed(1)} Kästen gesamt
-                        {g.sollBestand > 0
-                          ? ` · ${g.bestandFuerSoll.toFixed(1)} von ${g.sollBestand} auf den Soll`
-                          : ' · kein Soll'}
-                      </span>
-                    </div>
-                    <button
-                      className={styles.stornoBtn}
-                      title="Bearbeiten"
-                      onClick={() => {
-                        setEditGruppeId(g.id);
-                        setGruppeForm({ name: g.name, sollBestand: g.sollBestand, warnschwelle: g.warnschwelle });
-                        setActionError(null);
-                      }}
-                    >
-                      <i className="fas fa-pen"></i>
-                    </button>
-                    <button
-                      className={styles.stornoBtn}
-                      title="Entfernen"
-                      disabled={actionLoading}
-                      onClick={() => handleGruppeLoeschen(g)}
-                    >
-                      <i className="fas fa-trash"></i>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <h3 style={{ fontSize: '0.9375rem', margin: '0.5rem 0' }}>
-              {editGruppeId !== null ? 'Oberkategorie bearbeiten' : 'Neue Oberkategorie'}
-            </h3>
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Name</label>
-                <input
-                  type="text"
-                  value={gruppeForm.name}
-                  onChange={e => setGruppeForm({ ...gruppeForm, name: e.target.value })}
-                  placeholder="z.B. Bier"
-                />
-              </div>
-              <div className={styles.formGroup}>
-                <label>Soll-Bestand (Kästen)</label>
-                <input
-                  type="number" min={0} max={500}
-                  value={gruppeForm.sollBestand}
-                  placeholder="0"
-                  onChange={e => setGruppeForm({ ...gruppeForm, sollBestand: zahlOderLeer(e.target.value) })}
-                />
-              </div>
-              <div className={styles.formGroup}>
-                <label>Warnschwelle (Kästen)</label>
-                <input
-                  type="number" min={0} max={500}
-                  value={gruppeForm.warnschwelle}
-                  placeholder="0"
-                  onChange={e => setGruppeForm({ ...gruppeForm, warnschwelle: zahlOderLeer(e.target.value) })}
-                />
-              </div>
-            </div>
-
-            <div className={styles.modalActions}>
-              {editGruppeId !== null && (
-                <button
-                  className={styles.btnSecondary}
-                  onClick={() => { setEditGruppeId(null); setGruppeForm({ name: '', sollBestand: '', warnschwelle: '' }); }}
-                >
-                  Neu statt bearbeiten
-                </button>
-              )}
-              <button className={styles.btnSecondary} onClick={() => setModal('none')}>Schliessen</button>
-              <button
-                className={styles.btnPrimary}
-                onClick={handleGruppeSubmit}
-                disabled={actionLoading || !gruppeForm.name.trim()}
-              >
-                {editGruppeId !== null ? 'Speichern' : 'Anlegen'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <OberkategorienDialog
+          gruppen={oberkategorien}
+          form={gruppeForm}
+          onChange={setGruppeForm}
+          bearbeitet={editGruppeId}
+          onBearbeiten={g => {
+            setEditGruppeId(g.id);
+            setGruppeForm({ name: g.name, sollBestand: g.sollBestand, warnschwelle: g.warnschwelle });
+            setActionError(null);
+          }}
+          onNeuStattBearbeiten={() => {
+            setEditGruppeId(null);
+            setGruppeForm({ name: '', sollBestand: '', warnschwelle: '' });
+          }}
+          onLoeschen={handleGruppeLoeschen}
+          fehler={actionError}
+          busy={actionLoading}
+          onSchliessen={() => setModal('none')}
+          onSpeichern={handleGruppeSubmit}
+        />
       )}
 
       {/* Inventur */}
       {modal === 'inventur' && (
-        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
-          <div className={`${styles.modal} ${styles.modalLarge}`} onClick={e => e.stopPropagation()}>
-            <h2>Inventur</h2>
-            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-
-            {inventurErgebnis ? (
-              <>
-                {inventurErgebnis.length === 0 ? (
-                  <div className={styles.hinweisBox}>
-                    <i className="fas fa-circle-check"></i>
-                    <span>Keine Abweichungen – der Bestand stimmt.</span>
-                  </div>
-                ) : (
-                  <>
-                    <p className={styles.mehrFelderHinweis}>
-                      {inventurErgebnis.length} Abweichung{inventurErgebnis.length === 1 ? '' : 'en'} gebucht.
-                      Sie stehen als eigene Zeilen im Verlauf.
-                    </p>
-                    <div className={styles.tableWrapper}>
-                      <table className={styles.table}>
-                        <thead>
-                          <tr><th>Sorte</th><th>War</th><th>Gezählt</th><th>Differenz</th></tr>
-                        </thead>
-                        <tbody>
-                          {inventurErgebnis.map(a => (
-                            <tr key={a.sorteId}>
-                              <td>{a.sorteName}</td>
-                              <td>{a.vorher} Fl.</td>
-                              <td>{a.gezaehlt} Fl.</td>
-                              <td className={a.differenz < 0 ? styles.stockValueNull : styles.stockValueWarn}>
-                                {a.differenz > 0 ? '+' : ''}{a.differenz} Fl.
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
-                <div className={styles.modalActions}>
-                  <button className={styles.btnPrimary} onClick={() => setModal('none')}>Schliessen</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className={styles.mehrFelderHinweis}>
-                  Gezählte <strong>Flaschen</strong> je Sorte eintragen – vorbelegt ist der aktuelle
-                  Stand. Jede Abweichung wird als eigene Buchung festgehalten, damit am Jahresende
-                  nachvollziehbar bleibt, wo etwas gefehlt hat.
-                </p>
-
-                <div className={styles.inventurListe}>
-                  {bestand.map(b => {
-                    const gezaehlt = inventurZaehlung[b.sorte.id];
-                    const differenz = typeof gezaehlt === 'number' ? gezaehlt - b.lager : 0;
-                    return (
-                      <div key={b.sorte.id} className={styles.inventurZeile}>
-                        <div className={styles.inventurName}>
-                          <strong>{b.sorte.name}</strong>
-                          <span className={styles.einkaufMeta}>
-                            Soll: {formatBestand(b.lager, b.sorte.flaschenProKasten)}
-                          </span>
-                        </div>
-                        <input
-                          type="number"
-                          min={0}
-                          inputMode="numeric"
-                          className={styles.inventurFeld}
-                          value={gezaehlt ?? ''}
-                          placeholder="—"
-                          aria-label={`Gezählte Flaschen ${b.sorte.name}`}
-                          onChange={e => setInventurZaehlung(prev => ({
-                            ...prev,
-                            [b.sorte.id]: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0),
-                          }))}
-                        />
-                        <span className={`${styles.inventurDiff} ${differenz === 0 ? '' : differenz < 0 ? styles.stockValueNull : styles.stockValueWarn}`}>
-                          {typeof gezaehlt === 'number' && differenz !== 0 ? `${differenz > 0 ? '+' : ''}${differenz}` : ''}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className={styles.formGroup}>
-                  <label>Notiz</label>
-                  <input
-                    type="text"
-                    value={inventurNotiz}
-                    onChange={e => setInventurNotiz(e.target.value)}
-                    placeholder="z.B. Jahresinventur 2026"
-                  />
-                </div>
-
-                <div className={styles.modalActions}>
-                  <button className={styles.btnSecondary} onClick={() => setModal('none')}>Abbrechen</button>
-                  <button className={styles.btnPrimary} onClick={handleInventurSubmit} disabled={actionLoading}>
-                    {actionLoading ? 'Übernehmen…' : 'Zählung übernehmen'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+        <InventurDialog
+          bestand={bestand}
+          zaehlung={inventurZaehlung}
+          onZaehlung={setInventurZaehlung}
+          notiz={inventurNotiz}
+          onNotiz={setInventurNotiz}
+          ergebnis={inventurErgebnis}
+          fehler={actionError}
+          busy={actionLoading}
+          onSchliessen={() => setModal('none')}
+          onUebernehmen={handleInventurSubmit}
+        />
       )}
 
       {/* Neue Sorte / Sorte bearbeiten */}
       {modal === 'neueSorte' && (
-        <div className={styles.modalOverlay} onClick={() => { setNeueSorteAusCode(null); setModal('none'); }}>
-          <div className={styles.modal} onClick={e => e.stopPropagation()}>
-            <h2>{editSorteId ? 'Sorte bearbeiten' : 'Neue Sorte anlegen'}</h2>
-            {neueSorteAusCode && (
-              <p className={styles.mehrFelderHinweis}>
-                Aus dem Scan von <code>{neueSorteAusCode}</code> – der Barcode ist schon hinterlegt.
-              </p>
-            )}
-            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-            <div className={styles.formGroup}>
-              <label>Name</label>
-              <input
-                type="text"
-                value={sorteForm.name}
-                onChange={e => setSorteForm({ ...sorteForm, name: e.target.value })}
-                placeholder="z.B. Augustiner Hell"
-              />
-            </div>
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Kategorie</label>
-                <select
-                  value={sorteForm.kategorie}
-                  onChange={e => setSorteForm({ ...sorteForm, kategorie: e.target.value as Kategorie })}
-                >
-                  <option value="alkoholfrei">Alkoholfrei</option>
-                  <option value="alkoholisch">Alkoholisch</option>
-                </select>
-              </div>
-              <div className={styles.formGroup}>
-                <label>Oberkategorie</label>
-                <select
-                  value={sorteForm.oberkategorieId ?? ''}
-                  onChange={e => setSorteForm({
-                    ...sorteForm,
-                    oberkategorieId: e.target.value ? Number(e.target.value) : null,
-                  })}
-                >
-                  <option value="">— eigenständig —</option>
-                  {oberkategorien.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </select>
-              </div>
-            </div>
-
-            {sorteForm.oberkategorieId !== null && (
-              <p className={styles.mehrFelderHinweis}>
-                Diese Sorte zählt auf den Soll-Bestand der Oberkategorie ein und löst
-                selbst keine Nachbestellung aus – genau richtig für ein Bier, das nur mal
-                zum Probieren im Keller steht. Soll sie zusätzlich einzeln überwacht
-                werden, trag unten einen eigenen Soll-Bestand ein.
-              </p>
-            )}
-
-            <div className={styles.formGroup}>
-              <label>Gebinde</label>
-              <div className={styles.gebindeWahl}>
-                {GEBINDE.map(g => (
-                  <button
-                    key={g.wert}
-                    type="button"
-                    className={`${styles.gebindeBtn} ${sorteForm.flaschenProKasten === g.wert ? styles.gebindeBtnAktiv : ''}`}
-                    onClick={() => setSorteForm({ ...sorteForm, flaschenProKasten: g.wert })}
-                  >
-                    {g.label}
-                  </button>
-                ))}
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  className={styles.gebindeEigen}
-                  value={sorteForm.flaschenProKasten}
-                  onChange={e => setSorteForm({ ...sorteForm, flaschenProKasten: parseInt(e.target.value) || 1 })}
-                  aria-label="Flaschen pro Kasten"
-                  title="Flaschen pro Kasten"
-                />
-              </div>
-            </div>
-
-            {namensDublette && (
-              <div className={styles.hinweisBox}>
-                <i className="fas fa-circle-info"></i>
-                <span>Es gibt schon eine Sorte <strong>{namensDublette}</strong>. Anlegen geht trotzdem.</span>
-              </div>
-            )}
-
-            <details className={styles.mehrFelder} open={editSorteId !== null}>
-              <summary>Preise, Schwellen und Barcodes</summary>
-
-              <p className={styles.mehrFelderHinweis}>
-                Alles hier ist freiwillig. Leer heisst: Warnschwelle {SORTE_VORGABEN.warnschwelle},
-                Soll-Bestand {sorteForm.oberkategorieId !== null
-                  ? '0 – die Oberkategorie übernimmt das'
-                  : `${SORTE_VORGABEN.sollBestand} Kästen`}, Preise noch offen. Der
-                Einkaufspreis trägt sich beim ersten Einbuchen von selbst nach.
-              </p>
-
-              <div className={styles.formRow}>
-                <div className={styles.formGroup}>
-                  <label>Warnschwelle (Kästen)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={sorteForm.warnschwelle}
-                    placeholder={String(SORTE_VORGABEN.warnschwelle)}
-                    onChange={e => setSorteForm({ ...sorteForm, warnschwelle: zahlOderLeer(e.target.value) })}
-                  />
-                </div>
-                <div className={styles.formGroup}>
-                  <label>Soll-Bestand (Kästen)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={sorteForm.sollBestand}
-                    placeholder={String(SORTE_VORGABEN.sollBestand)}
-                    onChange={e => setSorteForm({ ...sorteForm, sollBestand: zahlOderLeer(e.target.value) })}
-                  />
-                </div>
-              </div>
-              <div className={styles.formRow}>
-                <div className={styles.formGroup}>
-                  <label>Einkaufspreis (€/Kasten)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={sorteForm.einkaufspreis}
-                    placeholder="noch offen"
-                    onChange={e => setSorteForm({ ...sorteForm, einkaufspreis: zahlOderLeer(e.target.value, true) })}
-                  />
-                </div>
-                <div className={styles.formGroup}>
-                  <label>Verkaufspreis (€/Flasche)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={sorteForm.verkaufspreis}
-                    placeholder="noch offen"
-                    onChange={e => setSorteForm({ ...sorteForm, verkaufspreis: zahlOderLeer(e.target.value, true) })}
-                  />
-                </div>
-              </div>
-              <div className={styles.formGroup}>
-                <label>Barcodes (EAN, kommagetrennt – für Scan-Einlagerung)</label>
-                <input
-                  type="text"
-                  value={(sorteForm.barcodes ?? []).join(', ')}
-                  onChange={e => setSorteForm({ ...sorteForm, barcodes: e.target.value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean) })}
-                  placeholder="z.B. 4001686386002, 4001686386019"
-                />
-              </div>
-            </details>
-            <div className={styles.modalActions}>
-              <button className={styles.btnSecondary} onClick={() => { setNeueSorteAusCode(null); setModal('none'); }}>Abbrechen</button>
-              <button className={styles.btnPrimary} onClick={handleSorteSubmit} disabled={actionLoading || !sorteForm.name.trim()}>
-                {actionLoading ? 'Speichern...' : editSorteId ? 'Speichern' : 'Anlegen'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SorteDialog
+          form={sorteForm}
+          onChange={setSorteForm}
+          oberkategorien={oberkategorien}
+          bearbeitet={editSorteId}
+          ausScanCode={neueSorteAusCode}
+          namensDublette={namensDublette}
+          fehler={actionError}
+          busy={actionLoading}
+          onAbbrechen={() => { setNeueSorteAusCode(null); setModal('none'); }}
+          onSpeichern={handleSorteSubmit}
+        />
       )}
 
       {/* Buchung erfassen */}
       {modal === 'buchung' && (
-        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
-          <div className={styles.modal} onClick={e => e.stopPropagation()}>
-            <h2>Buchung erfassen</h2>
-            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-            <div className={styles.formGroup}>
-              <label>Sorte</label>
-              <select
-                value={buchungForm.sorteId}
-                onChange={e => setBuchungForm({ ...buchungForm, sorteId: parseInt(e.target.value) })}
-              >
-                {sorten.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Typ</label>
-                <select
-                  value={buchungForm.typ}
-                  onChange={e => setBuchungForm({ ...buchungForm, typ: e.target.value as BuchungsTyp })}
-                >
-                  <option value="eingang">Eingang (Lieferung)</option>
-                  <option value="ausgang">Ausgang (Verkauf)</option>
-                  <option value="schwund">Schwund / Bruch (kein Verkauf)</option>
-                </select>
-              </div>
-              <div className={styles.formGroup}>
-                <label>Menge (Kästen)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={buchungForm.menge}
-                  onChange={e => setBuchungForm({ ...buchungForm, menge: parseInt(e.target.value) || 1 })}
-                />
-              </div>
-            </div>
-            <div className={styles.formGroup}>
-              <label>Notiz (optional)</label>
-              <textarea
-                value={buchungForm.notiz || ''}
-                onChange={e => setBuchungForm({ ...buchungForm, notiz: e.target.value })}
-                placeholder="z.B. Lieferung Getränke Müller"
-                rows={2}
-              />
-            </div>
-            <div className={styles.modalActions}>
-              <button className={styles.btnSecondary} onClick={() => setModal('none')}>Abbrechen</button>
-              <button className={styles.btnPrimary} onClick={handleBuchungSubmit} disabled={actionLoading || !buchungForm.sorteId}>
-                {actionLoading ? 'Buchen...' : 'Buchen'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <BuchungDialog
+          sorten={sorten}
+          form={buchungForm}
+          onChange={setBuchungForm}
+          fehler={actionError}
+          busy={actionLoading}
+          onAbbrechen={() => setModal('none')}
+          onSpeichern={handleBuchungSubmit}
+        />
       )}
 
-      {/* Bestand korrigieren */}
       {modal === 'bestandKorrektur' && (
-        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
-          <div className={styles.modal} onClick={e => e.stopPropagation()}>
-            <h2>Bestand korrigieren: {bestandKorrektur.sorteName}</h2>
-            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Flaschen im Lager</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={bestandKorrektur.lager}
-                  onChange={e => setBestandKorrektur({ ...bestandKorrektur, lager: parseInt(e.target.value) || 0 })}
-                />
-              </div>
-            </div>
-            <div className={styles.modalActions}>
-              <button className={styles.btnSecondary} onClick={() => setModal('none')}>Abbrechen</button>
-              <button className={styles.btnPrimary} onClick={handleBestandKorrekturSubmit} disabled={actionLoading}>
-                {actionLoading ? 'Speichern...' : 'Bestand setzen'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <BestandKorrekturDialog
+          stand={bestandKorrektur}
+          onChange={setBestandKorrektur}
+          fehler={actionError}
+          busy={actionLoading}
+          onAbbrechen={() => setModal('none')}
+          onSpeichern={handleBestandKorrekturSubmit}
+        />
       )}
 
       {modal === 'event' && (
-        <div className={styles.modalOverlay} onClick={() => setModal('none')}>
-          <div className={`${styles.modal} ${styles.modalLarge}`} onClick={e => e.stopPropagation()}>
-            <h2>{editEventId ? 'Event bearbeiten' : 'Besonderes Event anlegen'}</h2>
-            {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Name</label>
-                <input
-                  type="text"
-                  value={eventForm.name}
-                  onChange={e => setEventForm({ ...eventForm, name: e.target.value })}
-                  placeholder="z.B. Sommerfest 2026"
-                />
-              </div>
-              <div className={styles.formGroup}>
-                <label>Datum</label>
-                <GermanDateInput
-                  name="datum"
-                  value={eventForm.datum}
-                  onChange={(e) => setEventForm({ ...eventForm, datum: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div className={styles.formRow}>
-              <div className={styles.formGroup}>
-                <label>Status</label>
-                <select
-                  value={eventForm.status}
-                  onChange={e => setEventForm({ ...eventForm, status: e.target.value as EventStatus })}
-                >
-                  {EVENT_STATI.map(status => (
-                    <option key={status} value={status}>{EVENT_STATUS_LABELS[status]}</option>
-                  ))}
-                </select>
-              </div>
-              <div className={styles.formGroup}>
-                <label>Hinweis</label>
-                <input
-                  type="text"
-                  value={eventForm.notiz || ''}
-                  onChange={e => setEventForm({ ...eventForm, notiz: e.target.value })}
-                  placeholder="Kurzinfo oder Zuständigkeit"
-                />
-              </div>
-            </div>
-
-            <div className={styles.formGroup}>
-              <div className={styles.eventFormHeader}>
-                <label>Was muss gekauft werden?</label>
-                <button type="button" className={styles.btnSecondary} onClick={addEventItem}>
-                  <i className="fas fa-plus"></i> Position
-                </button>
-              </div>
-
-              <div className={styles.eventFormList}>
-                {eventForm.items.length === 0 ? (
-                  <div className={styles.eventItemsEmpty}>Noch keine Positionen hinterlegt</div>
-                ) : (
-                  eventForm.items.map((item, index) => (
-                    <div key={item.id} className={styles.eventFormItemCard}>
-                      <div className={styles.eventFormItemHeader}>
-                        <strong>Position {index + 1}</strong>
-                        <button
-                          type="button"
-                          className={`${styles.quickBtn} ${styles.btnDelete}`}
-                          onClick={() => removeEventItem(item.id)}
-                          title="Position entfernen"
-                        >
-                          <i className="fas fa-trash" style={{ fontSize: '0.6875rem' }}></i>
-                        </button>
-                      </div>
-
-                      <div className={styles.eventFormItemGrid}>
-                        <div className={styles.formGroup}>
-                          <label>Typ</label>
-                          <select
-                            value={item.typ}
-                            onChange={e => handleEventItemTypeChange(item.id, e.target.value as EventPositionTyp)}
-                          >
-                            {EVENT_POSITION_TYPEN.map(type => (
-                              <option key={type} value={type}>{EVENT_POSITION_LABELS[type]}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {item.typ === 'sorte' ? (
-                          <div className={styles.formGroup}>
-                            <label>Getränkesorte</label>
-                            <select
-                              value={item.sorteId ?? ''}
-                              onChange={e => handleEventSorteChange(item.id, parseInt(e.target.value, 10))}
-                              disabled={sorten.length === 0}
-                            >
-                              {sorten.length === 0 ? (
-                                <option value="">Keine Sorten vorhanden</option>
-                              ) : (
-                                sorten.map(sorte => (
-                                  <option key={sorte.id} value={sorte.id}>{sorte.name}</option>
-                                ))
-                              )}
-                            </select>
-                          </div>
-                        ) : (
-                          <div className={styles.formGroup}>
-                            <label>Artikel</label>
-                            <input
-                              type="text"
-                              value={item.artikelName}
-                              onChange={e => updateEventItem(item.id, { artikelName: e.target.value })}
-                              placeholder="z.B. Becher, Servietten, Eis"
-                            />
-                          </div>
-                        )}
-
-                        <div className={styles.formGroup}>
-                          <label>Menge</label>
-                          <input
-                            type="number"
-                            min={0.1}
-                            step={0.1}
-                            value={item.menge}
-                            onChange={e => updateEventItem(item.id, { menge: parseFloat(e.target.value) || 0 })}
-                          />
-                        </div>
-
-                        <div className={styles.formGroup}>
-                          <label>Einheit</label>
-                          <input
-                            type="text"
-                            value={item.einheit}
-                            onChange={e => updateEventItem(item.id, { einheit: e.target.value })}
-                            placeholder={item.typ === 'sorte' ? 'Kästen' : 'Stück'}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className={styles.modalActions}>
-              <button className={styles.btnSecondary} onClick={() => setModal('none')}>Abbrechen</button>
-              <button className={styles.btnPrimary} onClick={handleEventSubmit} disabled={actionLoading}>
-                {actionLoading ? 'Speichern...' : editEventId ? 'Speichern' : 'Event anlegen'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <EventDialog
+          form={eventForm}
+          onChange={setEventForm}
+          sorten={sorten}
+          bearbeitet={editEventId}
+          onPositionHinzu={addEventItem}
+          onPositionWeg={removeEventItem}
+          onPositionAendern={updateEventItem}
+          onPositionTyp={handleEventItemTypeChange}
+          onPositionSorte={handleEventSorteChange}
+          fehler={actionError}
+          busy={actionLoading}
+          onAbbrechen={() => setModal('none')}
+          onSpeichern={handleEventSubmit}
+        />
       )}
     </div>
   );
