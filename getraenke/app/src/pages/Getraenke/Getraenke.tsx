@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useGetraenke } from '../../hooks/useGetraenke';
 import { useScanKopplung } from '../../hooks/useScanKopplung';
 import type { Sorte, SorteFormData, BuchungFormData, BestandMitSorte, BuchungsTyp, EventStatus, EventPositionTyp, EventPosition, BesonderesEvent, EventPositionFormData, BesonderesEventFormData, InventurAbweichung, OberkategorieFormData, OberkategorieMitBestand } from '../../types/getraenke';
@@ -8,10 +8,10 @@ import {
   MAX_OFFENE_CODES, SUB_TABS,
   EVENT_STATUS_LABELS, EVENT_POSITION_LABELS,
   leereSorte, gebindeAusMenge,
-  ladeEinkaufDraft, merkeEinkaufDraft,
-  formatBestand, formatDatum, formatEventDatum, formatMonat,
-  buchungTypLabel, mengeText, escapePrintHtml,
-  type ModalType, type SubTab, type EinkaufDraft, type BestandKorrekturState,
+
+  formatEventDatum, formatMonat,
+  escapePrintHtml,
+  type ModalType, type SubTab, type BestandKorrekturState,
 } from './hilfen';
 import { BuchungDialog } from './dialoge/BuchungDialog';
 import { BestandKorrekturDialog } from './dialoge/BestandKorrekturDialog';
@@ -19,7 +19,11 @@ import { OberkategorienDialog } from './dialoge/OberkategorienDialog';
 import { InventurDialog } from './dialoge/InventurDialog';
 import { SorteDialog } from './dialoge/SorteDialog';
 import { EventDialog } from './dialoge/EventDialog';
-import { Bar } from 'react-chartjs-2';
+import { BestandTab } from './tabs/BestandTab';
+import { EinkaufTab } from './tabs/EinkaufTab';
+import { EventsTab } from './tabs/EventsTab';
+import { AuswertungTab } from './tabs/AuswertungTab';
+import { useEinkauf } from './useEinkauf';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -138,14 +142,6 @@ export const Getraenke: React.FC = () => {
   });
   const [eventForm, setEventForm] = useState<BesonderesEventFormData>(() => buildEmptyEventForm());
   const [editEventId, setEditEventId] = useState<number | null>(null);
-
-  // Einkauf-Tab: pro Sorte erfasste Menge (Kästen) + Preis (€/Kasten).
-  // Liegt in der sessionStorage, damit ein Reload im Getränkemarkt nicht die
-  // halbe Bestellung kostet.
-  const [einkaufDraft, setEinkaufDraft] = useState<EinkaufDraft>(ladeEinkaufDraft);
-  const [nurNachbestellen, setNurNachbestellen] = useState(true);
-
-  useEffect(() => { merkeEinkaufDraft(einkaufDraft); }, [einkaufDraft]);
 
   // Scan-Tab
   const [scanFeedback, setScanFeedback] = useState<ScanFeedback | null>(null);
@@ -555,122 +551,8 @@ export const Getraenke: React.FC = () => {
     }
   };
 
-  // --- Einkauf-Tab ---
-  const einkaufEmpfMap = useMemo(
-    () => new Map(einkaufsliste.sorten.map(e => [e.sorte.id, e.empfohleneBestellung])),
-    [einkaufsliste]
-  );
-
-  /**
-   * Sorten, die zu einer Gruppe mit Bedarf gehören. Vorbelegt wird hier keine
-   * Menge – welche Marke es wird, entscheidet der Einkauf. Sie sollen aber im
-   * gefilterten Einkauf sichtbar bleiben.
-   */
-  /**
-   * Einkaufsliste zum Anzeigen, Kopieren und Drucken: eigenständige Sorten und
-   * Gruppen in einer gemeinsamen Form. Bei einer Gruppe steht dabei, welche
-   * Marken dazugehören – gekauft wird eine davon.
-   */
-  const einkaufZeilen = useMemo(() => [
-    ...einkaufsliste.sorten.map(e => ({
-      schluessel: `s${e.sorte.id}`,
-      name: e.sorte.name,
-      hinweis: null as string | null,
-      aktuellerBestand: e.aktuellerBestand,
-      empfohleneBestellung: e.empfohleneBestellung,
-    })),
-    ...einkaufsliste.gruppen.map(g => ({
-      schluessel: `g${g.oberkategorie.id}`,
-      name: g.oberkategorie.name,
-      hinweis: g.sorten.map(s => s.name).join(', '),
-      aktuellerBestand: g.aktuellerBestand,
-      empfohleneBestellung: g.empfohleneBestellung,
-    })),
-  ], [einkaufsliste]);
-
-  const gruppenSortenIds = useMemo(() => {
-    const ids = new Set<number>();
-    for (const g of einkaufsliste.gruppen) for (const s of g.sorten) ids.add(s.id);
-    return ids;
-  }, [einkaufsliste]);
-
-  const getEinkaufRow = (b: BestandMitSorte) => einkaufDraft[b.sorte.id] ?? {
-    menge: einkaufEmpfMap.get(b.sorte.id) ?? 0,
-    preis: b.sorte.einkaufspreis ?? 0,
-  };
-
-  /** Ausgangswert einer Zeile, ohne den State zum Renderzeitpunkt zu lesen. */
-  const einkaufRowAus = (b: BestandMitSorte, draft: EinkaufDraft) => draft[b.sorte.id] ?? {
-    menge: einkaufEmpfMap.get(b.sorte.id) ?? 0,
-    preis: b.sorte.einkaufspreis ?? 0,
-  };
-
-  const setEinkaufRow = (b: BestandMitSorte, patch: Partial<{ menge: number; preis: number }>) => {
-    setEinkaufDraft(prev => ({ ...prev, [b.sorte.id]: { ...einkaufRowAus(b, prev), ...patch } }));
-  };
-
-  /**
-   * Menge relativ verändern. Muss aus `prev` rechnen: Vier schnelle Klicks auf
-   * „+" landen im selben Render-Durchlauf und würden sonst alle denselben
-   * Ausgangswert sehen – drei davon gingen verloren.
-   */
-  const aendereEinkaufMenge = (b: BestandMitSorte, delta: number) => {
-    setEinkaufDraft(prev => {
-      const zeile = einkaufRowAus(b, prev);
-      return { ...prev, [b.sorte.id]: { ...zeile, menge: Math.max(0, zeile.menge + delta) } };
-    });
-  };
-
-  // Standardmässig nur zeigen, was wirklich ansteht – plus alles, wo schon eine
-  // Menge drinsteht, sonst würde eine erfasste Zeile beim Filtern verschwinden.
-  const einkaufOffen = useMemo(() => bestand.filter(b =>
-    (einkaufEmpfMap.get(b.sorte.id) ?? 0) > 0
-    || (einkaufDraft[b.sorte.id]?.menge ?? 0) > 0
-    || gruppenSortenIds.has(b.sorte.id),
-  ), [bestand, einkaufEmpfMap, einkaufDraft, gruppenSortenIds]);
-
-  const einkaufSichtbar = nurNachbestellen ? einkaufOffen : bestand;
-
-  /**
-   * Einkauf nach Oberkategorie geblockt, damit der Gruppenbedarf dort steht, wo
-   * die Mengen erfasst werden. Ohne das müsste man sich merken, wie viele
-   * Kästen Bier noch fehlen, während man sie auf die Marken verteilt.
-   */
-  const einkaufGruppiert = useMemo(() => {
-    const bedarfJeGruppe = new Map(einkaufsliste.gruppen.map(g => [g.oberkategorie.id, g]));
-    const bloecke = new Map<number | null, { id: number | null; name: string | null; eintraege: BestandMitSorte[] }>();
-
-    for (const b of einkaufSichtbar) {
-      const schluessel = b.oberkategorieId;
-      const vorhanden = bloecke.get(schluessel);
-      if (vorhanden) vorhanden.eintraege.push(b);
-      else bloecke.set(schluessel, { id: schluessel, name: b.oberkategorieName, eintraege: [b] });
-    }
-
-    return [...bloecke.values()].sort((a, b) => {
-      if (a.name === null) return 1;
-      if (b.name === null) return -1;
-      return a.name.localeCompare(b.name, 'de');
-    }).map(block => {
-      const bedarf = block.id != null ? bedarfJeGruppe.get(block.id) : undefined;
-      // Was in diesem Block schon erfasst ist – zählt live mit beim Hochsteppen.
-      const erfasst = block.eintraege.reduce((summe, b) => summe + getEinkaufRow(b).menge, 0);
-      return {
-        ...block,
-        bedarf,
-        erfasst,
-        offen: bedarf ? Math.max(0, bedarf.empfohleneBestellung - erfasst) : 0,
-      };
-    });
-  }, [einkaufSichtbar, einkaufsliste, einkaufDraft, einkaufEmpfMap]);
-
-  const einkaufSumme = useMemo(() =>
-    bestand.reduce((sum, b) => {
-      const row = einkaufDraft[b.sorte.id] ?? { menge: einkaufEmpfMap.get(b.sorte.id) ?? 0, preis: b.sorte.einkaufspreis ?? 0 };
-      return sum + (row.menge > 0 ? row.menge * row.preis : 0);
-    }, 0),
-    [bestand, einkaufDraft, einkaufEmpfMap]
-  );
+  // Der Einkauf hat genug eigenen Zustand für einen eigenen Hook.
+  const einkauf = useEinkauf(bestand, einkaufsliste);
 
   // --- Scan-Tab ---
   const sorteToFormData = (s: Sorte): SorteFormData => ({
@@ -768,12 +650,7 @@ export const Getraenke: React.FC = () => {
   };
 
   const handleEinkaufVerbuchen = async () => {
-    const items = bestand
-      .map(b => {
-        const row = einkaufDraft[b.sorte.id] ?? { menge: einkaufEmpfMap.get(b.sorte.id) ?? 0, preis: b.sorte.einkaufspreis ?? 0 };
-        return { sorteId: b.sorte.id, menge: row.menge, einkaufspreis: row.preis };
-      })
-      .filter(i => i.menge > 0);
+    const items = einkauf.zuBuchen();
     if (items.length === 0) {
       setActionError('Keine Mengen erfasst.');
       return;
@@ -782,7 +659,7 @@ export const Getraenke: React.FC = () => {
     setActionError(null);
     try {
       await verbucheEinkauf(items);
-      setEinkaufDraft({});
+      einkauf.leeren();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Fehler beim Verbuchen des Einkaufs');
     } finally {
@@ -919,9 +796,9 @@ export const Getraenke: React.FC = () => {
   };
 
   const handleExportEinkaufsliste = () => {
-    if (einkaufZeilen.length === 0) return;
+    if (einkauf.zeilen.length === 0) return;
     const lines = ['Einkaufsliste - Getränke', '========================', ''];
-    for (const e of einkaufZeilen) {
+    for (const e of einkauf.zeilen) {
       lines.push(`${e.name}: ${e.empfohleneBestellung} Kästen (Bestand: ${e.aktuellerBestand.toFixed(1)} Kästen)`);
       if (e.hinweis) lines.push(`    davon eine Marke: ${e.hinweis}`);
     }
@@ -933,7 +810,7 @@ export const Getraenke: React.FC = () => {
   };
 
   const handlePrintEinkaufsliste = () => {
-    if (einkaufZeilen.length === 0) return;
+    if (einkauf.zeilen.length === 0) return;
     const html = `
       <html><head><title>Einkaufsliste</title>
       <style>
@@ -947,7 +824,7 @@ export const Getraenke: React.FC = () => {
       <h1>Einkaufsliste - Getränke</h1>
       <table>
         <thead><tr><th>Sorte</th><th>Aktueller Bestand</th><th>Bestellen</th></tr></thead>
-        <tbody>${einkaufZeilen.map(e => `<tr><td>${escapePrintHtml(e.name)}${e.hinweis ? `<br><small>${escapePrintHtml(e.hinweis)}</small>` : ''}</td><td>${escapePrintHtml(`${e.aktuellerBestand.toFixed(1)} Kästen`)}</td><td><strong>${escapePrintHtml(`${e.empfohleneBestellung} Kästen`)}</strong></td></tr>`).join('')}</tbody>
+        <tbody>${einkauf.zeilen.map(e => `<tr><td>${escapePrintHtml(e.name)}${e.hinweis ? `<br><small>${escapePrintHtml(e.hinweis)}</small>` : ''}</td><td>${escapePrintHtml(`${e.aktuellerBestand.toFixed(1)} Kästen`)}</td><td><strong>${escapePrintHtml(`${e.empfohleneBestellung} Kästen`)}</strong></td></tr>`).join('')}</tbody>
       </table>
       <p class="date">Erstellt am: ${new Date().toLocaleDateString('de-DE')}</p>
       </body></html>`;
@@ -1069,285 +946,32 @@ export const Getraenke: React.FC = () => {
         })}
       </nav>
 
-      {/* Bestand: Sorten-Karten + Einkaufsliste */}
       {activeTab === 'bestand' && (
-      <div className={styles.mainGrid}>
-        <div className={styles.tableCard}>
-          <div className={styles.sectionHeader}>
-            <h3><i className="fas fa-warehouse" style={{ marginRight: '0.5rem' }}></i>Lagerbestand</h3>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button className={styles.btnSecondary} onClick={openOberkategorien}>
-                <i className="fas fa-layer-group"></i> Oberkategorien
-              </button>
-              {bestand.length > 0 && (
-                <button className={styles.btnSecondary} onClick={openInventur}>
-                  <i className="fas fa-clipboard-check"></i> Inventur
-                </button>
-              )}
-            </div>
-          </div>
-          {bestand.length === 0 ? (
-            <div className={styles.emptyState}>
-              <i className="fas fa-box-open"></i>
-              <p>Keine Sorten vorhanden. Lege oben eine neue Sorte an.</p>
-            </div>
-          ) : (
-            bestandGruppiert.map(gruppe => (
-            <div key={gruppe.id ?? '__eigen'} className={styles.gruppenBlock}>
-              {/* Kopfzeile nur, wenn es überhaupt Oberkategorien gibt. */}
-              {(gruppe.name || bestandGruppiert.length > 1) && (
-                <div className={styles.gruppenKopf}>
-                  <span className={styles.gruppenName}>
-                    {gruppe.name ? (
-                      <><i className="fas fa-layer-group"></i> {gruppe.name}</>
-                    ) : (
-                      <><i className="fas fa-bottle-water"></i> Einzelne Sorten</>
-                    )}
-                  </span>
-                  {/* Nur der Gesamtbestand – der Soll-Vergleich steht in der
-                      Einkaufsliste und bezieht sich auf eine andere Teilmenge. */}
-                  <span className={`${styles.gruppenSumme} ${gruppe.info?.unterWarnschwelle ? styles.stockValueWarn : ''}`}>
-                    {gruppe.kaesten.toFixed(1)} Kästen
-                  </span>
-                </div>
-              )}
-            <div className={styles.sorteGrid}>
-              {gruppe.eintraege.map(b => {
-                const fpk = b.sorte.flaschenProKasten;
-                const lagerCls = b.lager === 0 ? styles.stockValueNull : b.unterWarnschwelle ? styles.stockValueWarn : '';
-                return (
-                  <div
-                    key={b.sorte.id}
-                    className={`${styles.sorteCard} ${b.gesamt === 0 ? styles.sorteCardDanger : b.unterWarnschwelle ? styles.sorteCardWarn : ''}`}
-                  >
-                    <div className={styles.sorteCardHeader}>
-                      <div className={styles.sorteCardTitle}>
-                        <i className={`fas ${b.sorte.kategorie === 'alkoholfrei' ? 'fa-glass-water' : 'fa-beer-mug-empty'}`}
-                          style={{ color: b.sorte.kategorie === 'alkoholfrei' ? '#3b82f6' : '#d97706' }}></i>
-                        <strong title={b.sorte.name}>{b.sorte.name}</strong>
-                      </div>
-                      <details className={styles.cardMenu}>
-                        <summary title="Mehr"><i className="fas fa-ellipsis-vertical"></i></summary>
-                        <div className={styles.menuList}>
-                          <button className={styles.menuItem} onClick={() => openBestandKorrektur(b)}>
-                            <i className="fas fa-sliders"></i> Bestand korrigieren
-                          </button>
-                          <button className={styles.menuItem} onClick={() => openEditSorte(b)}>
-                            <i className="fas fa-pen"></i> Sorte bearbeiten
-                          </button>
-                          <button className={`${styles.menuItem} ${styles.menuItemDanger}`} onClick={() => handleDeleteSorte(b.sorte.id)}>
-                            <i className="fas fa-trash"></i> Deaktivieren
-                          </button>
-                        </div>
-                      </details>
-                    </div>
-
-                    <div className={styles.stockRow}>
-                      <div className={styles.stockInfo}>
-                        <span className={styles.stockLabel}>Lager</span>
-                        <span className={`${styles.stockValue} ${lagerCls}`}>{formatBestand(b.lager, fpk)}</span>
-                      </div>
-                      <div className={styles.stepper}>
-                        <button
-                          className={`${styles.stepBtn} ${styles.btnMinus}`}
-                          title="1 Kasten entnehmen"
-                          disabled={b.lager < fpk}
-                          onClick={() => handleQuickBuchung(b.sorte.id, 'ausgang')}
-                        >−</button>
-                        <button
-                          className={`${styles.stepBtn} ${styles.btnPlus}`}
-                          title="1 Kasten einbuchen"
-                          onClick={() => handleQuickBuchung(b.sorte.id, 'eingang')}
-                        >+</button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            </div>
-            ))
-          )}
-        </div>
-
-        {/* Einkaufsliste */}
-        <div className={styles.einkaufslisteCard} ref={einkaufslisteRef}>
-          <div className={styles.einkaufslisteHeader}>
-            <h3><i className="fas fa-cart-shopping" style={{ marginRight: '0.5rem' }}></i>Einkaufsliste</h3>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              {einkaufZeilen.length > 0 && (
-                <>
-                  <span className={styles.einkaufsBadge}>{einkaufZeilen.length}</span>
-                  <button className={`${styles.quickBtn} ${styles.btnEdit}`} title="Kopieren" onClick={handleExportEinkaufsliste}>
-                    <i className="fas fa-copy" style={{ fontSize: '0.6875rem' }}></i>
-                  </button>
-                  <button className={`${styles.quickBtn} ${styles.btnSettings}`} title="Drucken" onClick={handlePrintEinkaufsliste}>
-                    <i className="fas fa-print" style={{ fontSize: '0.6875rem' }}></i>
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-          {einkaufZeilen.length === 0 ? (
-            <div className={styles.emptyState}>
-              <i className="fas fa-check-circle" style={{ color: '#10b981' }}></i>
-              <p>Alles auf Lager!</p>
-            </div>
-          ) : (
-            einkaufZeilen.map(e => (
-              <div key={e.schluessel} className={styles.einkaufsItem}>
-                <div className={styles.einkaufsItemInfo}>
-                  <span className={styles.einkaufsItemName}>
-                    {e.name}
-                    {e.hinweis && <span className={styles.gruppenMarke}>Gruppe</span>}
-                  </span>
-                  <span className={styles.einkaufsItemDetail}>
-                    Bestand: {e.aktuellerBestand.toFixed(1)} Kästen
-                    {e.hinweis && <> · {e.hinweis}</>}
-                  </span>
-                </div>
-                <div className={styles.einkaufsItemMenge}>
-                  <span className={styles.einkaufsMengeValue}>{e.empfohleneBestellung}</span>
-                  <span className={styles.einkaufsMengeLabel}>Kästen</span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
+        <BestandTab
+          bestand={bestand}
+          bloecke={bestandGruppiert}
+          einkaufZeilen={einkauf.zeilen}
+          einkaufslisteRef={einkaufslisteRef}
+          onOberkategorien={openOberkategorien}
+          onInventur={openInventur}
+          onBestandKorrektur={openBestandKorrektur}
+          onSorteBearbeiten={openEditSorte}
+          onSorteDeaktivieren={handleDeleteSorte}
+          onSchnellbuchung={handleQuickBuchung}
+          onEinkaufslisteKopieren={handleExportEinkaufsliste}
+          onEinkaufslisteDrucken={handlePrintEinkaufsliste}
+        />
       )}
 
       {/* Einkauf: Lager bestücken + neue Preise erfassen */}
       {activeTab === 'einkauf' && (
-      <div className={styles.tableCard}>
-        <h3><i className="fas fa-cart-shopping" style={{ marginRight: '0.5rem' }}></i>Einkauf einbuchen</h3>
-        <p className={styles.sectionSubtext} style={{ marginBottom: '1rem' }}>
-          Menge in Kästen erfassen und den Preis je Kasten anpassen – wird als Eingang ins Lager gebucht. Vorbelegt mit der Bestellempfehlung und dem zuletzt bekannten Preis.
-        </p>
-
-        {actionError && <div className={styles.errorMessage}>{actionError}</div>}
-
-        {bestand.length === 0 ? (
-          <div className={styles.emptyState}>
-            <i className="fas fa-box-open"></i>
-            <p>Keine Sorten vorhanden. Lege zuerst eine Sorte an.</p>
-          </div>
-        ) : (
-          <>
-            <div className={styles.einkaufLeiste}>
-              <div className={styles.einkaufFilter}>
-                <button
-                  className={`${styles.einkaufFilterBtn} ${nurNachbestellen ? styles.einkaufFilterAktiv : ''}`}
-                  onClick={() => setNurNachbestellen(true)}
-                >
-                  Nur nachbestellen ({einkaufOffen.length})
-                </button>
-                <button
-                  className={`${styles.einkaufFilterBtn} ${!nurNachbestellen ? styles.einkaufFilterAktiv : ''}`}
-                  onClick={() => setNurNachbestellen(false)}
-                >
-                  Alle Sorten ({bestand.length})
-                </button>
-              </div>
-              <button className={styles.einkaufLeer} onClick={() => setEinkaufDraft({})} disabled={actionLoading}>
-                <i className="fas fa-eraser"></i> Mengen zurücksetzen
-              </button>
-            </div>
-
-            {einkaufSichtbar.length === 0 ? (
-              <div className={styles.emptyState}>
-                <i className="fas fa-check"></i>
-                <p>Nichts nachzubestellen. Über <strong>Alle Sorten</strong> kommst du trotzdem an jede Sorte.</p>
-              </div>
-            ) : (
-            einkaufGruppiert.map(block => (
-            <div key={block.id ?? '__eigen'} className={styles.gruppenBlock}>
-              {(block.name || einkaufGruppiert.length > 1) && (
-                <div className={styles.gruppenKopf}>
-                  <span className={styles.gruppenName}>
-                    {block.name ? (
-                      <><i className="fas fa-layer-group"></i> {block.name}</>
-                    ) : (
-                      <><i className="fas fa-bottle-water"></i> Einzelne Sorten</>
-                    )}
-                  </span>
-                  {/* Der Gruppenbedarf gehört genau hierhin: Er zählt beim
-                      Hochsteppen live herunter, egal auf welche Marke. */}
-                  {block.bedarf && (
-                    <span className={`${styles.gruppenSumme} ${block.offen === 0 ? styles.gruppenErledigt : ''}`}>
-                      {block.offen === 0
-                        ? <><i className="fas fa-check"></i> {block.bedarf.empfohleneBestellung} Kästen verteilt</>
-                        : <>noch {block.offen} von {block.bedarf.empfohleneBestellung} Kästen zu verteilen</>}
-                    </span>
-                  )}
-                </div>
-              )}
-            <div className={styles.sorteGrid}>
-              {block.eintraege.map(b => {
-                const row = getEinkaufRow(b);
-                const empf = einkaufEmpfMap.get(b.sorte.id) ?? 0;
-                return (
-                  <div key={b.sorte.id} className={`${styles.sorteCard} ${row.menge > 0 ? styles.einkaufCardActive : ''}`}>
-                    <div className={styles.sorteCardHeader}>
-                      <div className={styles.sorteCardTitle}>
-                        <i className={`fas ${b.sorte.kategorie === 'alkoholfrei' ? 'fa-glass-water' : 'fa-beer-mug-empty'}`}
-                          style={{ color: b.sorte.kategorie === 'alkoholfrei' ? '#3b82f6' : '#d97706' }}></i>
-                        <strong title={b.sorte.name}>{b.sorte.name}</strong>
-                      </div>
-                      {empf > 0 && <span className={styles.einkaufEmpf} title="Empfohlene Bestellung">Empf. {empf}</span>}
-                    </div>
-                    <div className={styles.einkaufMeta}>Lager: {formatBestand(b.lager, b.sorte.flaschenProKasten)}</div>
-
-                    {/* Stepper statt Zahlenfeld: im Markt einhändig bedienbar. */}
-                    <div className={styles.einkaufMengeRow}>
-                      <span className={styles.stockLabel}>Kästen</span>
-                      <div className={styles.stepper}>
-                        <button
-                          className={`${styles.stepBtn} ${styles.btnMinus}`}
-                          title="Ein Kasten weniger"
-                          disabled={row.menge <= 0}
-                          onClick={() => aendereEinkaufMenge(b, -1)}
-                        >−</button>
-                        <input
-                          type="number" min={0} step={1} inputMode="numeric"
-                          className={styles.einkaufMenge}
-                          value={row.menge}
-                          onChange={e => setEinkaufRow(b, { menge: Math.max(0, parseInt(e.target.value) || 0) })}
-                          aria-label={`Kästen ${b.sorte.name}`}
-                        />
-                        <button
-                          className={`${styles.stepBtn} ${styles.btnPlus}`}
-                          title="Ein Kasten mehr"
-                          onClick={() => aendereEinkaufMenge(b, +1)}
-                        >+</button>
-                      </div>
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>Preis €/Kasten</label>
-                      <input
-                        type="number" min={0} step={0.01} inputMode="decimal"
-                        value={row.preis}
-                        onChange={e => setEinkaufRow(b, { preis: Math.max(0, parseFloat(e.target.value) || 0) })}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            </div>
-            ))
-            )}
-
-            <div className={styles.einkaufFooter}>
-              <div className={styles.einkaufSumme}>Einkaufssumme: <strong>{einkaufSumme.toFixed(2)} €</strong></div>
-              <button className={styles.btnPrimary} onClick={handleEinkaufVerbuchen} disabled={actionLoading}>
-                <i className="fas fa-check"></i> {actionLoading ? 'Verbuchen…' : 'Einkauf verbuchen'}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+        <EinkaufTab
+          bestand={bestand}
+          einkauf={einkauf}
+          fehler={actionError}
+          busy={actionLoading}
+          onVerbuchen={handleEinkaufVerbuchen}
+        />
       )}
 
       {/* Scannen: Barcode → 1 Kasten ins Lager */}
@@ -1366,220 +990,30 @@ export const Getraenke: React.FC = () => {
 
       {/* Events */}
       {activeTab === 'events' && (
-      <section className={styles.eventsSection}>
-        <div className={styles.sectionHeader}>
-          <div>
-            <h3><i className="fas fa-calendar-days" style={{ marginRight: '0.5rem' }}></i>Besondere Events</h3>
-            <p className={styles.sectionSubtext}>{events.length} Events, {offeneEvents} offen, {eventPositionenGesamt} Positionen</p>
-          </div>
-          <button className={styles.btnWarning} onClick={openNeuesEvent}>
-            <i className="fas fa-plus"></i> Event anlegen
-          </button>
-        </div>
-
-        {events.length === 0 ? (
-          <div className={styles.eventEmptyState}>
-            <i className="fas fa-list-check"></i>
-            <p>Noch keine besonderen Events angelegt</p>
-            <span>Lege ein Event an und hinterlege dort separat, was eingekauft werden muss.</span>
-          </div>
-        ) : (
-          <div className={styles.eventsGrid}>
-            {events.map(event => (
-              <article key={event.id} className={styles.eventCard}>
-                <div className={styles.eventCardHeader}>
-                  <div>
-                    <h4>{event.name}</h4>
-                    <div className={styles.eventMeta}>
-                      <span>{formatEventDatum(event.datum)}</span>
-                      <span>{event.items.length} Positionen</span>
-                    </div>
-                  </div>
-                  <span className={`${styles.eventStatusBadge} ${getEventStatusClass(event.status)}`}>
-                    {EVENT_STATUS_LABELS[event.status]}
-                  </span>
-                </div>
-
-                {event.notiz && <p className={styles.eventNotiz}>{event.notiz}</p>}
-
-                <div className={styles.eventItemsList}>
-                  {event.items.length === 0 ? (
-                    <div className={styles.eventItemsEmpty}>Noch keine Positionen hinterlegt</div>
-                  ) : (
-                    event.items.map(item => (
-                      <div key={item.id} className={styles.eventItemRow}>
-                        <div>
-                          <span className={styles.eventItemName}>{getEventItemName(item)}</span>
-                          <span className={styles.eventItemMeta}>{EVENT_POSITION_LABELS[item.typ]}</span>
-                        </div>
-                        <span className={styles.eventItemAmount}>{item.menge} {item.einheit}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className={styles.eventActions}>
-                  <button className={styles.btnSecondary} onClick={() => handlePrintEvent(event)}>
-                    <i className="fas fa-print"></i> Drucken
-                  </button>
-                  <button className={styles.btnSecondary} onClick={() => openEditEvent(event)}>
-                    <i className="fas fa-pen"></i> Bearbeiten
-                  </button>
-                  <button className={styles.btnDanger} onClick={() => handleDeleteEvent(event.id)}>
-                    <i className="fas fa-trash"></i> Löschen
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+        <EventsTab
+          events={events}
+          offeneEvents={offeneEvents}
+          positionenGesamt={eventPositionenGesamt}
+          positionsName={getEventItemName}
+          statusKlasse={getEventStatusClass}
+          onNeu={openNeuesEvent}
+          onBearbeiten={openEditEvent}
+          onDrucken={handlePrintEvent}
+          onLoeschen={handleDeleteEvent}
+        />
       )}
 
       {/* Auswertung: Buchungen + Statistik + Kassenbericht */}
       {activeTab === 'auswertung' && (
-      <>
-      {/* Letzte Buchungen */}
-      <div className={styles.buchungenCard}>
-        <h3><i className="fas fa-clock-rotate-left" style={{ marginRight: '0.5rem' }}></i>Letzte Buchungen</h3>
-        {/* Ein abgelehnter Storno muss hier sichtbar werden – sonst passiert
-            beim Klick scheinbar einfach nichts. */}
-        {actionError && modal === 'none' && <div className={styles.errorMessage}>{actionError}</div>}
-        {buchungen.length === 0 ? (
-          <div className={styles.emptyState}>
-            <i className="fas fa-inbox"></i>
-            <p>Noch keine Buchungen vorhanden</p>
-          </div>
-        ) : (
-          <div className={styles.tableWrapper}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Datum</th>
-                  <th>Sorte</th>
-                  <th>Typ</th>
-                  <th>Menge</th>
-                  <th>Wer</th>
-                  <th>Notiz</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {buchungen.slice(0, 20).map(b => (
-                  <tr key={b.id} className={b.storniert ? styles.buchungStorniert : ''}>
-                    <td style={{ whiteSpace: 'nowrap' }}>{formatDatum(b.datum)}</td>
-                    <td>{b.sorteName}</td>
-                    <td>
-                      <span className={`${styles.buchungTyp} ${
-                        b.typ === 'eingang' ? styles.typEingang :
-                        b.typ === 'ausgang' ? styles.typAusgang :
-                        b.typ === 'schwund' ? styles.typSchwund :
-                        b.typ === 'inventur' ? styles.typInventur :
-                        styles.typAuffuellung
-                      }`}>
-                        {buchungTypLabel(b.typ)}
-                      </span>
-                    </td>
-                    {/* Bei Inventur und Auffüllung steht in menge eine Zahl in
-                        Flaschen, sonst in Kästen. */}
-                    <td>{mengeText(b)}</td>
-                    <td>{b.benutzer || '—'}</td>
-                    <td>
-                      {b.notiz || '—'}
-                      {b.archiviert && <span className={styles.archivHinweis}>Archiv</span>}
-                      {b.storniert && (
-                        <span className={styles.stornoHinweis}>
-                          storniert{b.storniertVon ? ` von ${b.storniertVon}` : ''}
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      {/* Auch eine Inventur ist stornierbar – wer sich beim
-                          Zählen vertut, muss das zurücknehmen können. Nur
-                          archivierte Jahre sind zu. */}
-                      {!b.storniert && !b.archiviert && (
-                        <button
-                          className={styles.stornoBtn}
-                          title="Diese Buchung stornieren"
-                          disabled={actionLoading}
-                          onClick={() => handleStornieren(b.id, b.sorteName)}
-                        >
-                          <i className="fas fa-rotate-left"></i>
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Verbrauchsstatistik */}
-      {verbrauchsChartData && (
-        <div className={styles.chartCard}>
-          <h3><i className="fas fa-chart-bar" style={{ marginRight: '0.5rem' }}></i>Verbrauchsstatistik</h3>
-          <div className={styles.chartWrapper}>
-            <Bar data={verbrauchsChartData} options={{
-              responsive: true,
-              maintainAspectRatio: false,
-              plugins: {
-                legend: { position: 'top' },
-                title: { display: false },
-              },
-              scales: {
-                y: { beginAtZero: true, ticks: { stepSize: 1 } },
-              },
-            }} />
-          </div>
-        </div>
-      )}
-
-      {/* Kassenbericht */}
-      {kassenbericht && (
-        <div className={styles.kassenberichtSection}>
-          <div className={styles.chartCard}>
-            <h3><i className="fas fa-euro-sign" style={{ marginRight: '0.5rem' }}></i>Kassenbericht</h3>
-            <div className={styles.kassenSummary}>
-              <div className={`${styles.kassenCard} ${styles.kassenEinnahmen}`}>
-                <span className={styles.kassenLabel}>Einnahmen</span>
-                <span className={styles.kassenWert}>{kassenbericht.gesamtEinnahmen.toFixed(2)} €</span>
-              </div>
-              <div className={`${styles.kassenCard} ${styles.kassenAusgaben}`}>
-                <span className={styles.kassenLabel}>Ausgaben</span>
-                <span className={styles.kassenWert}>{kassenbericht.gesamtAusgaben.toFixed(2)} €</span>
-              </div>
-              <div className={`${styles.kassenCard} ${kassenbericht.gesamtGewinn >= 0 ? styles.kassenGewinn : styles.kassenVerlust}`}>
-                <span className={styles.kassenLabel}>{kassenbericht.gesamtGewinn >= 0 ? 'Gewinn' : 'Verlust'}</span>
-                <span className={styles.kassenWert}>{kassenbericht.gesamtGewinn.toFixed(2)} €</span>
-              </div>
-              {kassenbericht.gesamtSchwund > 0 && (
-                <div className={styles.kassenCard} title="Wert der abgeschriebenen Ware – kein Geldfluss, zählt nicht in den Gewinn">
-                  <span className={styles.kassenLabel}>Schwund</span>
-                  <span className={styles.kassenWert}>{kassenbericht.gesamtSchwund.toFixed(2)} €</span>
-                </div>
-              )}
-            </div>
-            {kassenChartData && (
-              <div className={styles.chartWrapper}>
-                <Bar data={kassenChartData} options={{
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  plugins: {
-                    legend: { position: 'top' },
-                    title: { display: false },
-                  },
-                  scales: {
-                    y: { beginAtZero: true, ticks: { callback: (v) => `${v} €` } },
-                  },
-                }} />
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      </>
+        <AuswertungTab
+          buchungen={buchungen}
+          kassenbericht={kassenbericht}
+          verbrauchsChart={verbrauchsChartData}
+          kassenChart={kassenChartData}
+          fehler={modal === 'none' ? actionError : null}
+          busy={actionLoading}
+          onStornieren={handleStornieren}
+        />
       )}
 
       {/* Oberkategorien verwalten */}

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.2
+
+Zweiter Teil des Umbaus – an der Bedienung ändert sich weiterhin nichts.
+
+- Die vier Tabs liegen jetzt in `tabs/`: Bestand, Einkauf, Events und Auswertung
+- Der Einkauf hatte genug eigenen Zustand für einen eigenen Hook (`useEinkauf`):
+  erfasste Mengen, Filter, Gruppierung und Summe an einem Ort statt über die
+  Seite verteilt
+- `Getraenke.tsx` von 2374 Zeilen (vor 1.8.1) auf 1118 – sie hält jetzt nur noch
+  die Zustände, die mehrere Ansichten teilen, und verteilt sie
+
 ## 1.8.1
 
 Reiner Umbau – an der Bedienung ändert sich nichts.
